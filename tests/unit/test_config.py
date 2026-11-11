@@ -47,12 +47,12 @@ def test_schema_must_be_an_identifier() -> None:
 @pytest.mark.parametrize(
     ("text", "secret", "kept"),
     [
-        ("postgresql://u:secret@h/db", "secret", "@h/db"),
+        ("postgresql://u:secret@h/db", "secret", "host=h"),  # parsed: rendered as key=value
         ("host=h password=secret dbname=x", "secret", "dbname=x"),
         ("host=h password='a b c' dbname=x", "a b c", "dbname=x"),
-        ("postgresql://h/db?password=secret", "secret", "h/db"),
+        ("postgresql://h/db?password=secret", "secret", "host=h"),
         ("host=h sslpassword=secret dbname=x", "secret", "dbname=x"),
-        ("postgresql://h/db?sslpassword=secret", "secret", "h/db"),
+        ("postgresql://h/db?sslpassword=secret", "secret", "host=h"),
         ("failed: host=h password=ab&cd dbname=x", "cd", "dbname=x"),
         ("failed: postgresql://h/db?password=ab&sslmode=require", "ab", "sslmode=require"),
         ("env PGPASSWORD=secret psql", "secret", "psql"),
