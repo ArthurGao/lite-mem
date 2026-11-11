@@ -10,13 +10,13 @@ from typing import ClassVar
 import psycopg
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
-# (pattern, replacement) for free text: a URL's user:password@; a password in a URL query (it
-# ends at the next parameter); a key=value password (quoted, or up to the next space: it may
-# itself contain '&').
+# (pattern, replacement) for free text: a URL's user:password@; a password-like parameter in a
+# URL query (it ends at the next parameter); a key=value password, any prefix (PGPASSWORD,
+# db_password, sslpassword), quoted or up to the next space (it may itself contain '&').
 _CREDENTIALS = (
     (re.compile(r"(://)[^\s/@]+@"), r"\1***@"),
-    (re.compile(r"([?&](?:ssl)?password=)[^\s&]+", re.IGNORECASE), r"\1***"),
-    (re.compile(r"((?<![?&\w])(?:ssl)?password=)('[^']*'|\S+)", re.IGNORECASE), r"\1***"),
+    (re.compile(r"([?&]\w*password=)[^\s&]+", re.IGNORECASE), r"\1***"),
+    (re.compile(r"((?<![?&\w])\w*password\s*=\s*)('[^']*'|\S+)", re.IGNORECASE), r"\1***"),
 )
 
 
