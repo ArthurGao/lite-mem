@@ -33,4 +33,5 @@ def open_engine(
         resolver=resolver,
         related=pipe.related,
         search=settings.search,
+        sensitive=pipe.sensitive,
     )

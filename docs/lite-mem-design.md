@@ -297,6 +297,10 @@ lite-mem/
   - 自己发现的：mem0 2.2.1 用 ollama embedder 时要 `ollama` 包但没声明依赖，第一次长跑在 lite-mem 跑完 12 分钟后才在 mem0 初始化时崩溃、结果全丢——eval 依赖里加上 `ollama==0.6.3`，并改为先初始化 mem0 再跑（测试覆盖）；CI 的测试库密码是 `postgres`，脱敏后的 `postgresql://postgres:***@` 总会包含它，"输出里没有密码"的断言必然失败——CI 换成不会在输出里巧合出现的密码（`363b770`）。
   - Codex：P1 stale 评分只要记忆里提到新值就放过旧值（"住 Auckland 和 Wellington" 不算 stale）——`unless` 改为"旧值已过去"的措辞（moved from、以前、used to），先红后绿；P1 mem0 对照按固定的 user id 在固定的 `mem0_eval` 里删数据，会删到别人的——每次运行用自己的 collection 和 history 目录，结束时只删自己的；P2 `get_all` 上限 1000、`MEM0_DIR` 复用旧 history——随上一条一起解决；P2 角色的 `reasoning` 清不回端点默认——加 `"default"`。
   - /simplify 后：mem0 对照的模型、端点、维度改从 `Settings` 读（原来写死，"同一个本地模型"只是巧合）；`--out` 记录数据集 sha256、git sha、各系统的设置（不含数据库 URL，密钥遮盖）和结果，KB 里的数字能对回到那次运行；`Report` 带 k、比例共用一个函数、CLI 复用 `_engine`。没做（留给 S7，那时 `maintain` 的接口才定）：对话带时间、`System` 加 maintain 钩子、`Report` 加合并数和每次写入的模型调用数；评分拆成可替换的 `Scorer`（关键词 / LLM 评判，接 LoCoMo 时需要）；variant 放进数据文件、命令行覆盖设置（阈值扫描时需要）；按用户并发跑（取决于 Ollama 是否并行）。
+- **S5b（2026-11-12）**：`sensitive.py` 用规则在代码里识别密码 / PIN / 验证码（关键词后面带数字的值，可以被空格分成几段）、银行卡号（卡组织号段 + Luhn 校验，前面标着订单、运单、发票的除外）、身份证号（校验位）、常见 API key；`LITEMEM_PIPELINE__SENSITIVE` = `drop`（默认）| `mask` | `keep`。引擎自己得出的事实（抽取结果、`infer=false` 原样存的消息）遇到敏感内容就丢掉或打码；调用方明确给的事实（`remember`、`update`）在 `drop` 下返回 `InvalidRequest`，让调用方知道没存；所有事件的 reason 一律打码（reason 是自由文本，不拒绝）；日志只记类型和数量。真实模型重跑（`eval/results/2026-11-12-s5b.json`，`add_only` 和 `terse_prompt`）：银行卡密码不再成为记忆，其余检查和 S5 持平。
+  - 取舍：不带数字的密码（"密码是 tiger"）识别不到——要识别就会误伤"forgot her password"这类普通事实；识别靠规则，不靠模型判断（模型判断可以以后作为 `mask` 的补充，不能替代规则）。
+  - Codex：High 带空格的值（"PIN 是 4829 1038"）漏掉——值后面允许跟最多三段带数字的片段；High `update` 的 reason 原样进历史——改在 `_apply` 里给所有事件的 reason 打码，模型写的消解理由也覆盖；Medium 符合 Luhn 的订单号被当成卡号——加卡组织号段，并排除前面标着订单 / 运单 / 发票的数字；Medium 重叠检查是平方复杂度——改为按字符标记，测试用两万处匹配限时 5 秒（平方实现要七秒以上）。每条都先有失败的测试。
+  - /simplify：自己做（diff 约 150 行生产代码）：`keep` 的判断收进一个 `_secrets` 帮助函数；`Policy` 类型在配置里复用，不重复写 Literal。
 
 ## 13. 待确认
 

@@ -92,6 +92,7 @@ def test_the_pipeline_is_switchable_from_the_environment(monkeypatch: pytest.Mon
     monkeypatch.setenv("LITEMEM_PIPELINE__RESOLVER", "add_only")
     monkeypatch.setenv("LITEMEM_PIPELINE__RELATED", "3")
     monkeypatch.setenv("LITEMEM_EMBEDDING__DIM", "8")
+    monkeypatch.setenv("LITEMEM_PIPELINE__SENSITIVE", "mask")
     s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert (s.pipeline.resolver, s.pipeline.related, s.embedding.dim) == ("add_only", 3, 8)
 
@@ -107,3 +108,4 @@ def test_the_pipeline_is_switchable_from_the_environment(monkeypatch: pytest.Mon
     s = s.model_copy(update={"namespace": "app"})
     engine = factory.open_engine(s, Store())  # type: ignore[arg-type]
     assert isinstance(engine._resolver, AddOnlyResolver) and engine._related == 3
+    assert engine._sensitive == "mask"

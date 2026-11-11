@@ -1,0 +1,149 @@
+{
+  "at": "2026-11-11T18:44:19+00:00",
+  "git": "27eb7f2",
+  "dataset": "eval/dataset.json",
+  "dataset_sha256": "52678ce502dbaf3a86812e5da134f397f6f9aa8f807ccbc1a0d083413b5a1d71",
+  "k": 3,
+  "settings": {
+    "add_only": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "add_only",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    },
+    "terse_prompt": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    }
+  },
+  "reports": [
+    {
+      "system": "add_only",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 5,
+      "questions": 11,
+      "hits": 10,
+      "memories": 24,
+      "add_seconds": [
+        6.273516582965385,
+        3.8621740830130875,
+        2.519521334033925,
+        2.782502416986972,
+        3.710808834002819,
+        3.0732159999897704,
+        3.5493036250118166,
+        1.5335593749769032,
+        4.292343166016508,
+        2.598131207982078,
+        1.494915209012106
+      ],
+      "misses": [
+        "xiaowang s1: forgot '会计'",
+        "xiaowang s3: still remembers '北京'",
+        "emma s3: still remembers 'Auckland'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma s4: still remembers 'night shift'",
+        "emma: no hit for 'When does she work?'",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.7142857142857143,
+      "hit_rate": 0.9090909090909091
+    },
+    {
+      "system": "terse_prompt",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 0,
+      "questions": 11,
+      "hits": 11,
+      "memories": 12,
+      "add_seconds": [
+        8.910014374996535,
+        4.3812207079608925,
+        11.01799000002211,
+        5.674733375024516,
+        8.757440000015777,
+        0.5229620410245843,
+        10.356156959023792,
+        5.615790166018996,
+        10.041700541973114,
+        5.032620541984215,
+        6.034520459012128
+      ],
+      "misses": [
+        "emma s2: forgot 'Mo'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.0,
+      "hit_rate": 1.0
+    }
+  ]
+}

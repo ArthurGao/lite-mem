@@ -5,6 +5,7 @@ An engine is bound to one namespace and one embedding model (design §4). Every 
 idempotency record commit together."""
 
 import dataclasses
+import logging
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from lite_mem.fusion import rrf
 from lite_mem.ids import uuid7
 from lite_mem.keyword import TOKENIZER
 from lite_mem.resolve import Resolver
+from lite_mem.sensitive import Finding, Policy, find, mask
 from lite_mem.stores.base import Filters, Store, Tx
 from lite_mem.types import (
     MEMORY_TYPES,
@@ -38,6 +40,7 @@ MAX_TOP_K = 100
 
 Clock = Callable[[], datetime]
 _EVENTS = TypeAdapter(list[MemoryEvent])  # idempotency results, stored as JSON
+log = logging.getLogger("lite_mem")
 
 
 def _utcnow() -> datetime:
@@ -102,6 +105,7 @@ class MemoryEngine:
         resolver: Resolver | None = None,
         related: int = 5,
         search: SearchConfig | None = None,
+        sensitive: Policy = "drop",
         clock: Clock = _utcnow,
     ) -> None:
         try:
@@ -114,6 +118,7 @@ class MemoryEngine:
         self._resolver = resolver
         self._related = related  # existing memories each new fact is compared with
         self._search = search or SearchConfig()
+        self._sensitive = sensitive  # what happens to a secret (lite_mem.sensitive)
         self._now = clock
         with store.transaction() as tx:
             tx.bind_namespace(
@@ -155,12 +160,13 @@ class MemoryEngine:
             for m in messages
             if m.role == "user" and m.content.strip()
         ]
-        return self._write(scope, [Add(f) for f in facts], idempotency_key)
+        return self._write(scope, [Add(f) for f in self._derived(facts)], idempotency_key)
 
     def remember(
         self, fact: Fact, scope: Scope, *, idempotency_key: str | None = None
     ) -> list[MemoryEvent]:
         """Store one fact as given (a profile fact supersedes the key's current value)."""
+        fact = dataclasses.replace(fact, content=self._stated(fact.content))
         return self._write(scope, [Add(fact)], idempotency_key)
 
     def update(
@@ -173,7 +179,7 @@ class MemoryEngine:
     ) -> Memory:
         """Correct a current memory's wording in place (CORRECT: same id; the history keeps the
         old text). A changed fact is a new memory that supersedes the old one instead."""
-        return self._change(Correct(memory_id, content), reason, produced_by)
+        return self._change(Correct(memory_id, self._stated(content)), reason, produced_by)
 
     def delete(
         self,
@@ -350,7 +356,7 @@ class MemoryEngine:
         extraction = self._extractor.extract(list(messages))
         facts = [
             _checked(dataclasses.replace(f, metadata=dict(metadata or {})), scope)
-            for f in extraction.facts
+            for f in self._derived(extraction.facts)
         ]
         adds = [op for op in self._embedded([Add(f) for f in facts]) if isinstance(op, Add)]
         exact, k = Filters(scope, mode="exact"), self._related
@@ -407,6 +413,35 @@ class MemoryEngine:
                 claimed[replaces] = local
         return steps
 
+    def _derived(self, facts: Sequence[Fact]) -> list[Fact]:
+        """Facts the engine derived itself: a secret is dropped or masked, never stored."""
+        kept: list[Fact] = []
+        dropped: list[str] = []
+        for fact in facts:
+            found = self._secrets(fact.content)
+            if not found:
+                kept.append(fact)
+            elif self._sensitive == "mask":
+                kept.append(dataclasses.replace(fact, content=mask(fact.content)))
+            else:
+                dropped += [f.kind for f in found]
+        if dropped:  # kinds only: the log must not hold the secret either
+            log.warning("not stored: %d sensitive value(s) %s", len(dropped), sorted(set(dropped)))
+        return kept
+
+    def _secrets(self, text: str) -> list[Finding]:
+        return [] if self._sensitive == "keep" else find(text)
+
+    def _stated(self, content: str) -> str:
+        """A fact a caller states explicitly: masked, or refused so the caller knows."""
+        found = self._secrets(content)
+        if not found:
+            return content
+        if self._sensitive == "mask":
+            return mask(content)
+        kinds = ", ".join(sorted({f.kind for f in found}))
+        raise InvalidRequest(f"not stored: it holds a secret ({kinds}); sensitive policy is drop")
+
     def _carry_out(self, tx: Tx, scope: Scope, steps: list["_Step"]) -> list[MemoryEvent]:
         """Apply a plan in the write transaction. A stored target that changed since it was looked
         up is not applied: the fact is added instead, and says so."""
@@ -449,6 +484,8 @@ class MemoryEngine:
     ) -> MemoryEvent:
         """One write operation inside the caller's transaction, with its history event(s)."""
         now = self._now()
+        if reason and self._secrets(reason):  # a reason is free text: masked, never refused
+            reason = mask(reason)
         if isinstance(op, Correct):
             memory = self._current(tx, op.memory_id)
             content = op.content  # checked by _change

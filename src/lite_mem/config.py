@@ -9,6 +9,8 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, Field, SecretStr, StringConstraints
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from lite_mem.sensitive import Policy
+
 OLLAMA_URL = "http://127.0.0.1:11434"  # the local Ollama server (embeddings: /api, LLM: /v1)
 
 # A namespace: lowercase segments separated by "/", e.g. "app" or "steward/<uuid>".
@@ -60,6 +62,9 @@ class PipelineConfig(BaseModel):
     related: int = Field(default=5, ge=1, le=20)  # existing memories each fact is compared with
     extract_prompt: str = "extract_facts.j2"  # a file in lite_mem/prompts
     resolve_prompt: str = "resolve_conflict.j2"
+    # Secrets (passwords, card and ID numbers, API keys; lite_mem.sensitive): drop (default),
+    # mask the value, or keep. Applies to every write, not only add(infer=true).
+    sensitive: Policy = "drop"
 
 
 class RoleOverride(BaseModel):
