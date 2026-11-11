@@ -1,0 +1,109 @@
+"""Configuration (design §9): environment variables with the `LITEMEM_` prefix and a `.env` file.
+Nested keys use `__`, e.g. `LITEMEM_LLM__MODEL=qwen3:8b`.
+
+Precedence, highest first: explicit arguments, environment, `.env`, defaults."""
+
+from dataclasses import dataclass
+from typing import Annotated, Literal
+
+from pydantic import AfterValidator, BaseModel, Field, SecretStr, StringConstraints
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+OLLAMA_URL = "http://127.0.0.1:11434"  # the local Ollama server (embeddings: /api, LLM: /v1)
+
+# A namespace: lowercase segments separated by "/", e.g. "app" or "steward/<uuid>".
+Namespace = Annotated[
+    str,
+    StringConstraints(pattern=r"^[a-z0-9][a-z0-9_.-]{0,62}(/[a-z0-9][a-z0-9_.-]{0,62}){0,3}$"),
+]
+
+
+def own_schema(name: str) -> str:
+    """lite-mem keeps its tables in a schema of its own: never a shared or system one."""
+    if name in ("public", "information_schema") or name.startswith("pg_"):
+        raise ValueError(f"schema {name!r} is shared or a system schema: use one of lite-mem's own")
+    return name
+
+
+# A schema lite-mem owns: a lowercase SQL identifier, not public or a system schema.
+OwnSchema = Annotated[
+    str,
+    StringConstraints(pattern=r"^[a-z_][a-z0-9_]{0,62}$"),
+    AfterValidator(own_schema),
+]
+
+Role = Literal["extract", "resolve", "consolidate"]
+LLMProvider = Literal["openai", "anthropic"]
+
+
+class EmbeddingConfig(BaseModel):
+    """One embedding model per namespace (design §4: an index is bound to its model)."""
+
+    provider: Literal["ollama", "openai"] = "ollama"
+    model: str = "bge-m3:567m"
+    # The API root; None = the provider's default (Ollama on the host; OpenAI's API).
+    base_url: str | None = None
+    api_key: SecretStr | None = None
+    timeout_s: float = Field(default=60.0, gt=0)
+
+
+class RoleOverride(BaseModel):
+    """What one role uses instead of the defaults (any field left out keeps the default)."""
+
+    provider: LLMProvider | None = None
+    base_url: str | None = None
+    api_key: SecretStr | None = None
+    model: str | None = None
+
+
+@dataclass(frozen=True)
+class ModelTarget:
+    """Where one role's calls go: resolved from the defaults and the role's override."""
+
+    provider: LLMProvider
+    base_url: str | None
+    api_key: SecretStr | None
+    model: str
+    timeout_s: float
+
+
+class LLMConfig(BaseModel):
+    """Every LLM call names a role; this maps each role to a provider, endpoint and model
+    (design §3). The top-level fields are the defaults; `roles` overrides them per role."""
+
+    # openai: any OpenAI-compatible endpoint (Ollama /v1, llm-gateway, a vendor); anthropic: extra.
+    provider: LLMProvider = "openai"
+    base_url: str | None = f"{OLLAMA_URL}/v1"
+    api_key: SecretStr | None = None
+    model: str = "qwen3:8b"
+    roles: dict[Role, RoleOverride] = Field(default_factory=dict)
+    timeout_s: float = Field(default=120.0, gt=0)
+
+    def target(self, role: Role) -> ModelTarget:
+        o = self.roles.get(role, RoleOverride())
+        provider = o.provider or self.provider
+        switched = provider != self.provider  # another provider: never reuse this one's endpoint
+        return ModelTarget(
+            provider=provider,
+            base_url=o.base_url if (o.base_url or switched) else self.base_url,
+            api_key=o.api_key if (o.api_key or switched) else self.api_key,
+            model=o.model or self.model,
+            timeout_s=self.timeout_s,
+        )
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="LITEMEM_",
+        env_nested_delimiter="__",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    database_url: str | None = None
+    # LITEMEM_DB_SCHEMA. No alias: pydantic-settings reads an aliased field from the bare alias
+    # (`SCHEMA`), not from the prefixed name, so a test's LITEMEM_SCHEMA once missed it.
+    db_schema: OwnSchema = "lite_mem"
+    namespace: Namespace | None = None  # required by the engine (design §4)
+    embedding: EmbeddingConfig = EmbeddingConfig()
+    llm: LLMConfig = LLMConfig()

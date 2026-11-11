@@ -250,6 +250,14 @@ lite-mem/
 | S9 接入 llm-steward | `LiteMemProvider`（库和 HTTP 两种）；llm-steward 的事件映射（UPDATE、DELETE）；合约测试；更新 llm-steward 设计文档 | llm-steward 的记忆合约测试在两种接入方式下都通过；手动端到端：对话 → 记忆 → 更新 → 检索 |
 | S10 记忆图谱（以后） | 实体和关系的抽取与查询 | 先写设计，再看 eval 的收益决定做不做 |
 
+### 阶段记录
+
+- **S0（2026-11-12）**：共享 PG 上建了库 `lite_mem`（角色 `lite_mem`，`vector` 0.8.6）；Ollama 上已有 `bge-m3:567m`、`qwen3:8b`；版本沿用 lite-rag 已在用的（psycopg 3.3.8、openai 3.46.0、anthropic 2.6.0、fastapi 0.162.2 等）；项目 KB `projects/lite-mem/` 建好。环境阶段没有代码，不做 /simplify 和 Codex。
+- **S1（2026-11-12）**：骨架、配置、迁移（`litemem migrate`）、fakes、CI。
+  - /simplify 后：每个角色可单独指定 provider、端点和模型（`LITEMEM_LLM__ROLES={"resolve": {"provider": "anthropic", "model": …}}`，换了 provider 就不沿用默认的端点和 key）；LLM 接口改收 payload 字典，由客户端序列化；namespace 记录分词器；只留一个 `errors.redact()`（整段连接串按 libpq 解析，其余按模式），在 CLI 出口统一脱敏；namespace 和 schema 用 pydantic 注解类型校验。没做：错误类先保留（S2 起就用到）；迁移"已是最新"时的往返次数、测试每次重建 schema（迁移少时无所谓，S2 再看）。
+  - 自己发现的 bug：schema 字段带别名 `schema` 时，pydantic-settings 从不带前缀的 `SCHEMA` 读，测试设置的 `LITEMEM_SCHEMA` 没生效，迁移测试实际跑在了应用 schema 上。字段改名 `db_schema`（`LITEMEM_DB_SCHEMA`），不用别名；应用 schema 当时是空的，已删除重建。
+  - Codex：P2 拒绝 `public` 和系统 schema（配置和 `migrate()` 两处都查）——修了；P2 错误原文可能带连接信息——由 CLI 出口统一脱敏，测试在边界制造一条带密码的错误来验证；P1"`conn.execute` 不接受 bytes"——不成立：psycopg 3 的查询参数接受 `bytes`，本阶段的测试实际执行了迁移，lite-rag 同样这么用。
+
 ## 13. 待确认
 
 - **llm-steward 接入时冲突消解归谁**（S9 前定）：

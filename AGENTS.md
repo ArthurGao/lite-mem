@@ -24,7 +24,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S0 — environment** (design §12). The design was written 2026-11-11.
+**S2 — store and direct writes** (design §12). S0 and S1 done 2026-11-12.
 
 ## Rules
 
@@ -61,7 +61,7 @@ Ollama on the host (`127.0.0.1:11434`, `bge-m3:567m`, `qwen3:8b`).
 uv run pytest                    # unit + integration, fakes only (needs LITEMEM_TEST_DATABASE_URL)
 uv run pytest -m ollama          # opt-in: real Ollama
 uv run ruff check && uv run ruff format --check && uv run mypy
-uv run litemem migrate           # schema on LITEMEM_DATABASE_URL
+uv run litemem migrate           # schema LITEMEM_DB_SCHEMA (default lite_mem) on LITEMEM_DATABASE_URL
 uv run litemem add|search|history|erase ...
 uv run litemem eval              # design §8
 uv run --extra server litemem serve   # 127.0.0.1:8710
