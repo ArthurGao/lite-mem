@@ -10,9 +10,7 @@ from typing import ClassVar
 import psycopg
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
-_CREDENTIALS = re.compile(
-    r"(?<=://)[^\s/@]+@|(?<=password=)('[^']*'|\S+)|(?<=[?&]password=)[^\s&]+", re.IGNORECASE
-)
+_CREDENTIALS = re.compile(r"(?<=://)[^\s/@]+@|(?<=password=)('[^']*'|[^\s&]+)", re.IGNORECASE)
 
 
 def redact(text: str) -> str:
@@ -24,8 +22,9 @@ def redact(text: str) -> str:
     except psycopg.ProgrammingError:
         params = None
     if params is not None and ("=" in text or "://" in text):
-        if params.get("password"):
-            params["password"] = "***"
+        for name in params:  # password, sslpassword, and any other secret libpq may add
+            if "password" in name and params[name]:
+                params[name] = "***"
         return make_conninfo("", **params)
     return _CREDENTIALS.sub(lambda m: "***@" if m.group().endswith("@") else "***", text)
 
