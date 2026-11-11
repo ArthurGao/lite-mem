@@ -249,3 +249,38 @@ def test_a_remainder_is_screened_like_any_derived_fact(store: Store, clock: Cloc
     _say(engine, ADA, "lives in Wellington")
     _say(engine, ADA, "moved to Auckland")
     assert current(engine) == ["moved to Auckland"]
+
+
+def _moves(target: str, remainder: str) -> Handler:
+    """A `resolve` handler: a new fact containing "moved" replaces the memory containing `target`
+    and names `remainder` as what still holds; anything else is added."""
+
+    def decide(payload: dict[str, Any]) -> dict[str, Any]:
+        hit = [e["id"] for e in payload["EXISTING"] if target in e["fact"]]
+        if "moved" in payload["NEW"] and hit:
+            return {"action": "UPDATE", "target_id": hit[0], "reason": "moved",
+                    "remainder": remainder}  # fmt: skip
+        return {"action": "ADD", "target_id": None, "reason": "new", "remainder": None}
+
+    return decide
+
+
+def test_a_remainder_must_restate_part_of_the_old_fact(store: Store, clock: Clock) -> None:
+    """Found by the S9 manual run (real qwen3): an atomic "Lives in Wellington" was superseded
+    with a remainder "Works as a nurse" — a fact it never said, already stored on its own, so it
+    was stored twice. Code decides: a remainder must share most of its words with the old fact,
+    and must not repeat a memory the scope already holds."""
+    engine, _ = _engine(store, clock, _moves("Wellington", "plays the violin"))
+    _say(engine, ADA, "lives in Wellington")
+    events = _say(engine, ADA, "moved to Auckland")
+    assert [e.op for e in events] == ["SUPERSEDE"]  # no remainder: Wellington never said it
+    assert current(engine) == ["moved to Auckland"]
+
+
+def test_a_remainder_already_held_is_not_stored_again(store: Store, clock: Clock) -> None:
+    engine, _ = _engine(store, clock, _moves("Wellington", "works as a nurse"))
+    _say(engine, ADA, "lives in Wellington and works as a nurse")
+    _say(engine, ADA, "works as a nurse")  # also said on its own (the resolver adds it)
+    events = _say(engine, ADA, "moved to Auckland")
+    assert [e.op for e in events] == ["SUPERSEDE"]
+    assert current(engine) == ["moved to Auckland", "works as a nurse"]

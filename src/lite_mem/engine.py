@@ -20,7 +20,7 @@ from lite_mem.errors import ConfigError, Conflict, InvalidRequest, NotFound, red
 from lite_mem.extract import Extractor
 from lite_mem.fusion import rrf
 from lite_mem.ids import uuid7
-from lite_mem.keyword import TOKENIZER
+from lite_mem.keyword import TOKENIZER, terms
 from lite_mem.resolve import Resolver
 from lite_mem.sensitive import Finding, Policy, find, mask
 from lite_mem.stores.base import Filters, Store, Tx
@@ -601,7 +601,13 @@ class MemoryEngine:
             if replaces is not None:
                 claimed[replaces] = local
             old = next((m for m in near if m.id == target), None)
-            if old is not None and decision.remainder and action in ("UPDATE", "DELETE"):
+            if (
+                old is not None
+                and decision.remainder
+                and action in ("UPDATE", "DELETE")
+                and _restates(decision.remainder, old.content)
+                and not _held(decision.remainder, [add.fact.content, *(m.content for m in near)])
+            ):
                 steps += self._kept(old, decision.remainder, scope, decision.produced_by)
         return steps
 
@@ -856,6 +862,20 @@ def _filters(
         scope, include_shared=include_shared, as_of=as_of, types=kinds,
         metadata=metadata or None, now=now,
     )  # fmt: skip
+
+
+def _restates(part: str, whole: str) -> bool:
+    """Whether `part` repeats what `whole` said (most of its words are in it): a remainder is
+    what still holds of the old fact, never a fact of its own (S9: qwen3 named an unrelated,
+    already stored fact as the remainder of an atomic one)."""
+    words, said = set(terms(part)), set(terms(whole))
+    return bool(words) and len(words & said) >= 0.5 * len(words)
+
+
+def _held(text: str, contents: Sequence[str]) -> bool:
+    """Whether `text` is already one of these, up to case and spacing."""
+    norm = " ".join(text.lower().split())
+    return any(" ".join(c.lower().split()) == norm for c in contents)
 
 
 def valid_namespace(namespace: str) -> str:

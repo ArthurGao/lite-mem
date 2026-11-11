@@ -24,7 +24,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S9 — `LiteMemProvider` in llm-steward** (design §10, §12; first settle the S9 entry decisions in §13). S0–S8b done 2026-11-12; eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
+**S10 — memory graph (later; design first)** (design §12). S0–S9 done 2026-11-12 (S9's adapter lives in llm-steward); eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
 
 ## Rules
 
