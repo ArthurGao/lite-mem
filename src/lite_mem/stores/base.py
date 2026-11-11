@@ -2,12 +2,22 @@
 write's row, index entries and history commit together or not at all."""
 
 import uuid
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol
 
+from lite_mem.errors import Conflict
 from lite_mem.types import EventOp, HistoryEntry, Memory, MemoryType, Scope
+
+# The columns a Memory is read from and written to, in one order for every store.
+MEMORY_COLUMNS = (
+    "id, user_id, agent_id, session_id, type, key, content, importance, confidence, valid_from, "
+    "valid_to, superseded_by, expires_at, source, metadata, access_count, created_at, updated_at"
+)
+# Rows shared within a namespace (design §3): no user, no agent.
+SHARED = "m.user_id IS NULL AND m.agent_id IS NULL"
 
 
 @dataclass(frozen=True)
@@ -27,6 +37,38 @@ class Filters:
     now: datetime | None = None
     types: tuple[MemoryType, ...] | None = None
     metadata: dict[str, Any] | None = None  # equality on each key
+
+
+def own_rows(f: Filters, mark: Callable[[str], str]) -> str:
+    """The SQL for the filter's own scope on `memories m` — the isolation rule every store applies
+    (design §3): user and agent always; the session when exact or given. `mark(name)` writes a
+    bound parameter in the store's style; the values are f.scope's fields."""
+    fields = [("user_id", f.scope.user_id), ("agent_id", f.scope.agent_id)]
+    if f.mode == "exact" or f.scope.session_id is not None:
+        fields.append(("session_id", f.scope.session_id))
+    return " AND ".join(
+        f"m.{column} = {mark(column)}" if value is not None else f"m.{column} IS NULL"
+        for column, value in fields
+    )
+
+
+def with_shared(f: Filters) -> bool:
+    return f.include_shared and f.mode == "visible"
+
+
+def check_binding(
+    namespace: str, row: Mapping[str, Any], *, provider: str, model: str, dim: int, tokenizer: str
+) -> None:
+    """Conflict when a namespace's stored index configuration differs from the one asked for."""
+    wanted = {"embedding_provider": provider, "embedding_model": model, "dim": dim,
+              "tokenizer": tokenizer}  # fmt: skip
+    differs = {k: (row[k], v) for k, v in wanted.items() if row[k] != v}
+    if differs:
+        said = ", ".join(f"{k} {had!r} (asked {got!r})" for k, (had, got) in differs.items())
+        raise Conflict(
+            f"namespace {namespace!r} was built with another index configuration: {said}; "
+            "open it with that configuration, or use a new namespace"
+        )
 
 
 class Tx(Protocol):

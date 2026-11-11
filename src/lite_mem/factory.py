@@ -15,8 +15,22 @@ from lite_mem.sensitive import Policy
 from lite_mem.stores.base import Store
 from lite_mem.stores.pg import PgStore
 
+SQLITE = "sqlite:///"
 
-def open_store(settings: Settings, *, max_size: int = 4) -> PgStore:
+
+def is_sqlite(url: str | None) -> bool:
+    return (url or "").startswith("sqlite:")
+
+
+def open_store(settings: Settings, *, max_size: int = 4) -> Store:
+    """`sqlite:///<file>`: the embedded store (extra `sqlite`); anything else: PostgreSQL."""
+    url = settings.database_url or ""
+    if is_sqlite(url):
+        if not url.startswith(SQLITE) or len(url) == len(SQLITE):
+            raise ConfigError("a SQLite database is named sqlite:///<path to the file>")
+        from lite_mem.stores.sqlite import SqliteStore
+
+        return SqliteStore(url[len(SQLITE) :])
     return PgStore(settings.database_url, settings.db_schema, max_size=max_size)
 
 

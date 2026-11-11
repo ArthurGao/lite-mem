@@ -187,7 +187,7 @@ def test_an_unexpected_error_is_a_problem_without_its_message(
     def broken(*_: Any, **__: Any) -> Any:
         raise RuntimeError("bug near postgresql://u:topsecret@db/x")
 
-    monkeypatch.setattr(PgStore, "transaction", broken)
+    monkeypatch.setattr(type(components.store), "transaction", broken)
     client = _client(components, raise_server_exceptions=False)
     r = client.get("/v1/memories", params={"user_id": "ada"}, headers=_auth())
     assert _is_problem(r, 500) and "topsecret" not in r.text and "bug" not in r.text
@@ -214,10 +214,10 @@ def test_health_needs_no_key_and_is_cheap_unless_deep(
     r = client.get("/health", params={"deep": "true"})
     assert r.status_code == 503 and r.json()["embedding"] == "error" and "refused" not in r.text
 
-    def no_db(self: PgStore) -> None:
+    def no_db(self: Any) -> None:
         raise RuntimeError("down")
 
-    monkeypatch.setattr(PgStore, "ping", no_db)
+    monkeypatch.setattr(type(components.store), "ping", no_db)
     assert client.get("/health").json() == {"status": "error", "store": "error"}
 
 

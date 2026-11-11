@@ -274,23 +274,26 @@ class MemoryEngine:
         threshold = self._maintenance.merge_threshold
         assert threshold is not None
         exact = Filters(scope, mode="exact", types=(kind,), now=now)
-        with self._store.transaction() as tx:  # read-only: the groups
+        with self._store.transaction() as tx:
             memories = tx.list_memories(self._ns, exact)
             vectors = tx.vectors(self._ns, [m.id for m in memories])
-            by_id = {m.id: m for m in memories}
-            grouped: set[uuid.UUID] = set()
-            groups: list[list[Memory]] = []
-            for memory in memories:  # oldest first: each memory joins one group at most
-                if memory.id in grouped or memory.id not in vectors:
-                    continue
+        by_id = {m.id: m for m in memories}
+        grouped: set[uuid.UUID] = set()
+        groups: list[list[Memory]] = []
+        for memory in memories:  # oldest first: each memory joins one group at most
+            if memory.id in grouped or memory.id not in vectors:
+                continue
+            # One short transaction per lookup: on SQLite every transaction holds the write lock,
+            # and a long grouping pass would make every other read and write wait.
+            with self._store.transaction() as tx:
                 near = tx.vector_search(self._ns, vectors[memory.id], exact, self._related + 1)
-                group = [memory] + [
-                    by_id[i] for i, sim in near
-                    if i != memory.id and i not in grouped and sim >= threshold
-                ]  # fmt: skip
-                if len(group) > 1:
-                    grouped.update(m.id for m in group)
-                    groups.append(group)
+            group = [memory] + [
+                by_id[i] for i, sim in near
+                if i in by_id and i != memory.id and i not in grouped and sim >= threshold
+            ]  # fmt: skip
+            if len(group) > 1:
+                grouped.update(m.id for m in group)
+                groups.append(group)
         steps: list[_Step] = []
         for group in groups:
             decision = consolidator.merge(group)
@@ -802,6 +805,7 @@ def _filters(
     now: datetime,
 ) -> Filters:
     _check_scope(scope)
+    _aware(as_of, "as_of")
     kinds = tuple(types) if types else None
     if kinds and any(t not in MEMORY_TYPES for t in kinds):
         raise InvalidRequest(f"types must be among {MEMORY_TYPES}")
@@ -811,6 +815,13 @@ def _filters(
         scope, include_shared=include_shared, as_of=as_of, types=kinds,
         metadata=metadata or None, now=now,
     )  # fmt: skip
+
+
+def _aware(at: datetime | None, name: str) -> None:
+    """A time without a zone means something different on each machine (and in each store):
+    refused rather than guessed."""
+    if at is not None and at.utcoffset() is None:
+        raise InvalidRequest(f"{name} needs a timezone (e.g. 2026-01-01T09:00:00+00:00)")
 
 
 def _check_scope(scope: Scope) -> None:
@@ -824,6 +835,7 @@ def _checked(fact: Fact, scope: Scope) -> Fact:
     """The strict gate for a caller's fact (a model's output is normalised before it, S4)."""
     if fact.type not in MEMORY_TYPES:
         raise InvalidRequest(f"type must be one of {MEMORY_TYPES}")
+    _aware(fact.expires_at, "expires_at")
     if (fact.type == "profile") != (fact.key is not None):
         raise InvalidRequest("a profile memory has a key, and only a profile memory has one")
     if fact.key is not None and scope.session_id is not None:

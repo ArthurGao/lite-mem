@@ -10,16 +10,16 @@ import pytest
 from lite_mem.engine import MemoryEngine
 from lite_mem.extract import LlmExtractor
 from lite_mem.resolve import LlmResolver
-from lite_mem.stores.pg import PgStore
+from lite_mem.stores.base import Store
 from lite_mem.testing import FakeEmbedder, FakeLLM, Handler, update_when, user_lines
 from lite_mem.types import Message, Scope
-from tests.conftest import Clock
+from tests.conftest import Clock, tx_class
 
 ADA = Scope(user_id="ada")
 BOB = Scope(user_id="bob")
 
 
-def _engine(store: PgStore, clock: Clock, resolve: Handler) -> tuple[MemoryEngine, FakeLLM]:
+def _engine(store: Store, clock: Clock, resolve: Handler) -> tuple[MemoryEngine, FakeLLM]:
     llm = FakeLLM(extract=user_lines, resolve=resolve)
     engine = MemoryEngine(
         store, "app", FakeEmbedder(), extractor=LlmExtractor(llm), resolver=LlmResolver(llm),
@@ -36,7 +36,7 @@ def _current(engine: MemoryEngine, scope: Scope = ADA) -> list[str]:
     return sorted(m.content for m in engine.list_memories(scope))
 
 
-def test_beijing_then_shanghai_supersedes(store: PgStore, clock: Clock) -> None:
+def test_beijing_then_shanghai_supersedes(store: Store, clock: Clock) -> None:
     engine, llm = _engine(store, clock, update_when("搬"))
     [first] = _say(engine, ADA, "我住北京")
     assert (first.op, first.produced_by) == ("ADD", "fake:fake-llm")
@@ -55,7 +55,7 @@ def test_beijing_then_shanghai_supersedes(store: PgStore, clock: Clock) -> None:
     assert [e["fact"] for e in resolve_calls[0]["EXISTING"]] == ["我住北京"]
 
 
-def test_a_duplicate_is_not_written_again(store: PgStore, clock: Clock) -> None:
+def test_a_duplicate_is_not_written_again(store: Store, clock: Clock) -> None:
     engine, _ = _engine(
         store, clock, lambda p: {"action": "NOOP", "target_id": None, "reason": "same"}
     )
@@ -64,7 +64,7 @@ def test_a_duplicate_is_not_written_again(store: PgStore, clock: Clock) -> None:
     assert _current(engine) == ["我喜欢绿茶"]
 
 
-def test_a_target_outside_the_candidates_is_added_instead(store: PgStore, clock: Clock) -> None:
+def test_a_target_outside_the_candidates_is_added_instead(store: Store, clock: Clock) -> None:
     stray = str(uuid.uuid4())
     engine, _ = _engine(
         store, clock, lambda p: {"action": "UPDATE", "target_id": stray, "reason": "r"}
@@ -74,7 +74,7 @@ def test_a_target_outside_the_candidates_is_added_instead(store: PgStore, clock:
     assert e.op == "ADD" and _current(engine) == ["Lives in Berlin", "Lives in Paris"]
 
 
-def test_delete_retires_the_old_fact_and_keeps_the_new_one(store: PgStore, clock: Clock) -> None:
+def test_delete_retires_the_old_fact_and_keeps_the_new_one(store: Store, clock: Clock) -> None:
     def no_more(payload: dict[str, Any]) -> dict[str, Any]:
         return {"action": "DELETE", "target_id": payload["EXISTING"][0]["id"], "reason": "gone"}
 
@@ -86,7 +86,7 @@ def test_delete_retires_the_old_fact_and_keeps_the_new_one(store: PgStore, clock
     assert _current(engine) == ["No longer has a cat"]
 
 
-def test_related_memories_come_from_exactly_this_scope(store: PgStore, clock: Clock) -> None:
+def test_related_memories_come_from_exactly_this_scope(store: Store, clock: Clock) -> None:
     engine, llm = _engine(store, clock, update_when("搬"))
     _say(engine, BOB, "我住北京")
     _say(engine, Scope(), "公司在北京")  # shared: visible to Ada, but not hers to supersede
@@ -95,7 +95,7 @@ def test_related_memories_come_from_exactly_this_scope(store: PgStore, clock: Cl
     assert _current(engine, BOB) == ["我住北京"]
 
 
-def test_a_retry_with_the_same_key_calls_no_model(store: PgStore, clock: Clock) -> None:
+def test_a_retry_with_the_same_key_calls_no_model(store: Store, clock: Clock) -> None:
     engine, llm = _engine(store, clock, update_when("搬"))
     first = _say(engine, ADA, "我住北京", idempotency_key="episode-1")
     calls = len(llm.calls)
@@ -104,28 +104,27 @@ def test_a_retry_with_the_same_key_calls_no_model(store: PgStore, clock: Clock) 
 
 
 def test_the_batch_is_one_transaction(
-    store: PgStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+    store: Store, clock: Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from lite_mem.stores import pg
-
     engine, _ = _engine(store, clock, update_when("搬"))
     _say(engine, ADA, "我住北京")
-    original, calls = pg.PgTx.insert_memory, {"n": 0}
+    tx = tx_class(store)
+    original, calls = tx.insert_memory, {"n": 0}
 
-    def flaky(self: pg.PgTx, *args: Any) -> None:
+    def flaky(self: Any, *args: Any) -> None:
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("disk full")
         original(self, *args)
 
-    monkeypatch.setattr(pg.PgTx, "insert_memory", flaky)
+    monkeypatch.setattr(tx, "insert_memory", flaky)
     with pytest.raises(RuntimeError):
         _say(engine, ADA, "我搬到上海了", "我喜欢绿茶")  # a supersede, then a failing add
     monkeypatch.undo()
     assert _current(engine) == ["我住北京"]  # the supersede rolled back with it
 
 
-def test_a_target_changed_meanwhile_is_added_instead(store: PgStore, clock: Clock) -> None:
+def test_a_target_changed_meanwhile_is_added_instead(store: Store, clock: Clock) -> None:
     """The memory the resolver chose was retired between the lookup and the write."""
     holder: dict[str, MemoryEngine] = {}
 
@@ -149,7 +148,7 @@ def test_without_an_extractor_infer_is_a_config_error(engine: MemoryEngine) -> N
 
 
 @pytest.mark.ollama
-def test_a_real_round_trip_with_local_models(store: PgStore, clock: Clock) -> None:
+def test_a_real_round_trip_with_local_models(store: Store, clock: Clock) -> None:
     """qwen3:8b extracts and resolves, bge-m3 embeds — all on the local Ollama."""
     from lite_mem.config import EmbeddingConfig, LLMConfig
     from lite_mem.embedding import OllamaEmbedder
@@ -171,7 +170,7 @@ def test_a_real_round_trip_with_local_models(store: PgStore, clock: Clock) -> No
     assert "绿茶" in current or "green tea" in current.lower()  # unrelated facts stay
 
 
-def test_facts_of_one_batch_are_resolved_against_each_other(store: PgStore, clock: Clock) -> None:
+def test_facts_of_one_batch_are_resolved_against_each_other(store: Store, clock: Clock) -> None:
     """One message, two wordings of one change: the second sees the first (pending in the batch)
     and is a duplicate of it, not a second current fact (seen with qwen3:8b)."""
 
@@ -193,7 +192,7 @@ def test_facts_of_one_batch_are_resolved_against_each_other(store: PgStore, cloc
     assert _current(engine) == ["住在上海"]
 
 
-def test_a_later_fact_can_replace_an_earlier_one_of_its_batch(store: PgStore, clock: Clock) -> None:
+def test_a_later_fact_can_replace_an_earlier_one_of_its_batch(store: Store, clock: Clock) -> None:
     """The later wording wins and inherits what the earlier one replaced."""
 
     def resolve(payload: dict[str, Any]) -> dict[str, Any]:
@@ -217,7 +216,7 @@ def test_a_later_fact_can_replace_an_earlier_one_of_its_batch(store: PgStore, cl
     assert _current(engine) == ["上个月搬到了上海浦东"]
 
 
-def test_a_resolver_cannot_reach_another_users_memory(store: PgStore, clock: Clock) -> None:
+def test_a_resolver_cannot_reach_another_users_memory(store: Store, clock: Clock) -> None:
     """Whatever a resolver answers, only its candidates can be superseded or deleted."""
     holder: dict[str, str] = {}
 
@@ -234,7 +233,7 @@ def test_a_resolver_cannot_reach_another_users_memory(store: PgStore, clock: Clo
 
 
 def test_an_update_keeps_the_part_of_a_compound_fact_that_still_holds(
-    store: PgStore, clock: Clock
+    store: Store, clock: Clock
 ) -> None:
     """S6 acceptance run: superseding "lives in Wellington and works as a nurse" by a move lost
     the job. The resolver names what still holds; code keeps it as its own memory."""
@@ -249,7 +248,7 @@ def test_an_update_keeps_the_part_of_a_compound_fact_that_still_holds(
     assert str(first.memory_id) in (kept.reason or "")
 
 
-def test_a_remainder_is_screened_like_any_derived_fact(store: PgStore, clock: Clock) -> None:
+def test_a_remainder_is_screened_like_any_derived_fact(store: Store, clock: Clock) -> None:
     engine, _ = _engine(store, clock, update_when("moved", remainder="her PIN is 482915"))
     _say(engine, ADA, "lives in Wellington")
     _say(engine, ADA, "moved to Auckland")

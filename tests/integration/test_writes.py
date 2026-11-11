@@ -5,15 +5,14 @@ import threading
 import uuid
 from typing import Any
 
-import psycopg
 import pytest
 
 from lite_mem.engine import MemoryEngine
 from lite_mem.errors import Conflict, InvalidRequest, NotFound
-from lite_mem.stores.pg import PgStore
+from lite_mem.stores.base import Store
 from lite_mem.testing import FakeEmbedder
 from lite_mem.types import Fact, Message, Scope
-from tests.conftest import TEST_SCHEMA, Clock
+from tests.conftest import Clock, count_rows, tx_class
 
 ADA = Scope(user_id="ada")
 BOB = Scope(user_id="bob")
@@ -85,22 +84,16 @@ def test_delete_retires_and_as_of_still_sees_it(engine: MemoryEngine, clock: Clo
 
 
 def test_erase_removes_everything_about_one_user_and_nothing_else(
-    engine: MemoryEngine, migrated: psycopg.Connection
+    engine: MemoryEngine, store: Store
 ) -> None:
     engine.remember(Fact("Berlin", type="profile", key="city"), ADA, idempotency_key="k1")
     engine.remember(Fact("Shanghai", type="profile", key="city"), ADA)
     engine.remember(Fact("Likes tea"), BOB, idempotency_key="k2")
     assert engine.erase("ada") == 2
 
-    def count(table: str, user: str) -> int:
-        row = migrated.execute(
-            f"SELECT count(*) FROM {TEST_SCHEMA}.{table} WHERE user_id = %s", (user,)
-        ).fetchone()
-        return int(row[0]) if row else 0
-
     for table in ("memories", "memory_events", "idempotency"):
-        assert count(table, "ada") == 0, table
-    assert (count("memories", "bob"), count("idempotency", "bob")) == (1, 1)
+        assert count_rows(store, table, "ada") == 0, table
+    assert (count_rows(store, "memories", "bob"), count_rows(store, "idempotency", "bob")) == (1, 1)
 
 
 def test_the_same_idempotency_key_writes_once(engine: MemoryEngine) -> None:
@@ -112,7 +105,7 @@ def test_the_same_idempotency_key_writes_once(engine: MemoryEngine) -> None:
     assert len(engine.list_memories(ADA)) == 2
 
 
-def test_concurrent_writes_with_one_key_write_once(store: PgStore, clock: Clock) -> None:
+def test_concurrent_writes_with_one_key_write_once(store: Store, clock: Clock) -> None:
     engines = [MemoryEngine(store, "app", FakeEmbedder(), clock=clock) for _ in range(4)]
     results: list[Any] = []
 
@@ -129,21 +122,20 @@ def test_concurrent_writes_with_one_key_write_once(store: PgStore, clock: Clock)
 
 
 def test_a_write_that_fails_halfway_leaves_nothing(
-    store: PgStore, clock: Clock, monkeypatch: pytest.MonkeyPatch
+    store: Store, clock: Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from lite_mem.stores import pg
-
     engine = MemoryEngine(store, "app", FakeEmbedder(), clock=clock)
     calls = {"n": 0}
-    original = pg.PgTx.add_event
+    tx = tx_class(store)
+    original = tx.add_event
 
-    def flaky(self: pg.PgTx, *args: Any, **kwargs: Any) -> None:
+    def flaky(self: Any, *args: Any, **kwargs: Any) -> None:
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("disk full")
         original(self, *args, **kwargs)
 
-    monkeypatch.setattr(pg.PgTx, "add_event", flaky)
+    monkeypatch.setattr(tx, "add_event", flaky)
     with pytest.raises(RuntimeError):
         engine.add(
             [Message("user", "a"), Message("user", "b")], ADA, infer=False, idempotency_key="x"
@@ -154,7 +146,7 @@ def test_a_write_that_fails_halfway_leaves_nothing(
     assert len(engine.add([Message("user", "a")], ADA, infer=False, idempotency_key="x")) == 1
 
 
-def test_namespaces_do_not_see_each_other(store: PgStore, clock: Clock) -> None:
+def test_namespaces_do_not_see_each_other(store: Store, clock: Clock) -> None:
     app = MemoryEngine(store, "app", FakeEmbedder(), clock=clock)
     other = MemoryEngine(store, "other/tenant", FakeEmbedder(), clock=clock)
     [e] = app.remember(Fact("Lives in Berlin"), ADA)
@@ -168,7 +160,7 @@ def test_namespaces_do_not_see_each_other(store: PgStore, clock: Clock) -> None:
     assert other.erase("ada") == 0 and len(app.list_memories(ADA)) == 1
 
 
-def test_a_namespace_is_bound_to_its_embedding_model(store: PgStore, clock: Clock) -> None:
+def test_a_namespace_is_bound_to_its_embedding_model(store: Store, clock: Clock) -> None:
     MemoryEngine(store, "app", FakeEmbedder(dim=64), clock=clock)
     with pytest.raises(Conflict, match="dim 64"):
         MemoryEngine(store, "app", FakeEmbedder(dim=32), clock=clock)
@@ -176,7 +168,7 @@ def test_a_namespace_is_bound_to_its_embedding_model(store: PgStore, clock: Cloc
         MemoryEngine(store, "app", FakeEmbedder(model="another"), clock=clock)
 
 
-def test_an_invalid_namespace_is_refused(store: PgStore) -> None:
+def test_an_invalid_namespace_is_refused(store: Store) -> None:
     with pytest.raises(InvalidRequest, match="namespace"):
         MemoryEngine(store, "Bad Name", FakeEmbedder())
 
@@ -223,7 +215,7 @@ def test_an_idempotency_key_never_replays_another_users_write(engine: MemoryEngi
 
 
 def test_concurrent_first_values_of_one_profile_key_leave_one_current(
-    store: PgStore, clock: Clock
+    store: Store, clock: Clock
 ) -> None:
     engines = [MemoryEngine(store, "app", FakeEmbedder(), clock=clock) for _ in range(4)]
     errors: list[BaseException] = []

@@ -6,7 +6,8 @@ long-term memories about a person — extracting facts and resolving them agains
 right memories again with hybrid vector + BM25 search weighted by importance and age.
 
 - Library and optional HTTP service over one `MemoryEngine`.
-- PostgreSQL + pgvector; local models through Ollama by default (no paid API needed).
+- PostgreSQL + pgvector, or one SQLite file; local models through Ollama by default (no paid API
+  needed).
 - Switchable LLM per role (Ollama, any OpenAI-compatible endpoint, Anthropic); no silent fallbacks.
 - Built-in evaluation, including a side-by-side comparison with mem0.
 - A memory engine for [llm-steward](https://github.com/ArthurGao/llm-steward); sister of
@@ -31,6 +32,16 @@ uv run litemem eval -v resolve -v add_only --mem0   # the synthetic comparison (
 
 Secrets (passwords, PINs, card and ID numbers, API keys) are never stored as memories: they are dropped by
 default (`LITEMEM_PIPELINE__SENSITIVE=drop|mask|keep`).
+
+### Without a database server
+
+The same engine runs on one SQLite file (extra `sqlite`; the same tests pass on both stores):
+
+```sh
+LITEMEM_DATABASE_URL=sqlite:///./memory.db uv run litemem add --user emma "I live in Wellington"
+```
+
+Writes are serialised by SQLite: fine on one machine; for many concurrent writers use PostgreSQL.
 
 ## HTTP service
 

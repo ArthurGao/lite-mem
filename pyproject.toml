@@ -24,6 +24,10 @@ litemem = "lite_mem.cli:app"
 anthropic = [
     "anthropic==2.6.0",
 ]
+# The embedded store (S7b): one SQLite file, no server.
+sqlite = [
+    "sqlite-vec==0.1.9",
+]
 server = [
     "fastapi==0.162.2",
     "uvicorn==0.54.0",
@@ -61,7 +65,7 @@ packages = ["lite_mem"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["jieba", "mem0", "mem0.*"]
+module = ["jieba", "mem0", "mem0.*", "sqlite_vec"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

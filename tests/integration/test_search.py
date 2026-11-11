@@ -4,17 +4,15 @@ types, metadata and as_of filters — with search entries committed with the row
 from datetime import timedelta
 from typing import Any
 
-import psycopg
 import pytest
 
 from lite_mem.engine import MemoryEngine
 from lite_mem.errors import ModelError
 from lite_mem.keyword import idf, term_counts, term_score, terms
-from lite_mem.stores.base import Filters
-from lite_mem.stores.pg import PgStore
+from lite_mem.stores.base import Filters, Store
 from lite_mem.testing import FakeEmbedder
 from lite_mem.types import Fact, Scope
-from tests.conftest import TEST_SCHEMA, Clock
+from tests.conftest import Clock, count_rows, tx_class
 
 ADA = Scope(user_id="ada")
 BOB = Scope(user_id="bob")
@@ -24,7 +22,7 @@ def _found(engine: MemoryEngine, query: str, scope: Scope = ADA, **kw: Any) -> l
     return [h.memory.content for h in engine.search(query, scope, **kw)]
 
 
-def test_sql_bm25_ranks_exactly_as_the_formula(engine: MemoryEngine, store: PgStore) -> None:
+def test_sql_bm25_ranks_exactly_as_the_formula(engine: MemoryEngine, store: Store) -> None:
     docs = [
         # written first, so it has the smaller id: without length normalisation it would tie
         # with the short one below and win the tie; the formula ranks the short one higher
@@ -71,7 +69,7 @@ def test_chinese_memories_are_found_by_their_words(engine: MemoryEngine) -> None
     assert _found(engine, "住在哪里 上海", top_k=1) == ["我住在上海浦东"]
 
 
-def test_search_stays_in_its_scope_and_namespace(store: PgStore, clock: Clock) -> None:
+def test_search_stays_in_its_scope_and_namespace(store: Store, clock: Clock) -> None:
     app = MemoryEngine(store, "app", FakeEmbedder(), clock=clock)
     other = MemoryEngine(store, "other", FakeEmbedder(), clock=clock)
     app.remember(Fact("Ada likes green tea"), ADA)
@@ -94,7 +92,7 @@ def test_a_superseded_value_is_not_found_now_but_is_as_of_then(
     assert _found(engine, "where does she live Berlin Shanghai", as_of=then) == ["Lives in Berlin"]
 
 
-def test_a_correction_reindexes_the_text(engine: MemoryEngine, store: PgStore) -> None:
+def test_a_correction_reindexes_the_text(engine: MemoryEngine, store: Store) -> None:
     [e] = engine.remember(Fact("Likes grean tee"), ADA)
     engine.update(e.memory_id, "Likes green tea")
     assert _found(engine, "green tea") == ["Likes green tea"]
@@ -135,21 +133,19 @@ def test_a_hit_counts_as_an_access(engine: MemoryEngine, clock: Clock) -> None:
 
 
 def test_an_index_failure_rolls_the_write_back(
-    engine: MemoryEngine, monkeypatch: pytest.MonkeyPatch
+    engine: MemoryEngine, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from lite_mem.stores import pg
-
     def broken(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("index down")
 
-    monkeypatch.setattr(pg.PgTx, "index_memory", broken)
+    monkeypatch.setattr(tx_class(store), "index_memory", broken)
     with pytest.raises(RuntimeError):
         engine.remember(Fact("Lives in Berlin"), ADA)
     monkeypatch.undo()
     assert engine.list_memories(ADA) == []
 
 
-def test_a_failed_embedding_writes_nothing(store: PgStore, clock: Clock) -> None:
+def test_a_failed_embedding_writes_nothing(store: Store, clock: Clock) -> None:
     class Down(FakeEmbedder):
         def embed(self, texts: list[str]) -> list[list[float]]:
             raise ModelError("embedding down")
@@ -160,24 +156,17 @@ def test_a_failed_embedding_writes_nothing(store: PgStore, clock: Clock) -> None
     assert engine.list_memories(ADA) == []
 
 
-def test_erase_takes_the_search_entries_too(
-    engine: MemoryEngine, migrated: psycopg.Connection
-) -> None:
+def test_erase_takes_the_search_entries_too(engine: MemoryEngine, store: Store) -> None:
     engine.remember(Fact("Lives in Berlin"), ADA)
     engine.remember(Fact("Lives in Paris"), BOB)
     engine.erase("ada")
-
-    def rows(table: str) -> int:
-        row = migrated.execute(f"SELECT count(*) FROM {TEST_SCHEMA}.{table}").fetchone()
-        return int(row[0]) if row else 0
-
-    assert rows("memory_vectors_64") == 1  # Bob's
-    assert rows("memory_postings") == len(term_counts("Lives in Paris"))
+    assert count_rows(store, "memory_vectors") == 1  # Bob's
+    assert count_rows(store, "memory_postings") == len(term_counts("Lives in Paris"))
     assert _found(engine, "Berlin") == []
 
 
 @pytest.mark.ollama
-def test_a_real_round_trip_with_ollama(store: PgStore, clock: Clock) -> None:
+def test_a_real_round_trip_with_ollama(store: Store, clock: Clock) -> None:
     from lite_mem.config import EmbeddingConfig
     from lite_mem.embedding import OllamaEmbedder
 
@@ -189,9 +178,11 @@ def test_a_real_round_trip_with_ollama(store: PgStore, clock: Clock) -> None:
 
 
 def test_a_crowd_of_nearer_vectors_in_other_scopes_does_not_hide_ones_own(
-    store: PgStore, clock: Clock
+    pg_store: Store, clock: Clock
 ) -> None:
-    """The filter must take part in the nearest-neighbour search, not cut its result afterwards."""
+    """The filter must take part in the nearest-neighbour search, not cut its result afterwards
+    (PostgreSQL: with an HNSW index the planner may use; SqliteStore always ranks exactly)."""
+    store = pg_store
     engine = MemoryEngine(store, "app", FakeEmbedder(), clock=clock)
     for i in range(300):  # nearer to the query than Ada's own memory, and all someone else's
         engine.remember(Fact(f"green tea green tea {i}"), Scope(user_id=f"u{i}"))
@@ -206,7 +197,7 @@ def test_a_crowd_of_nearer_vectors_in_other_scopes_does_not_hide_ones_own(
     assert len(nearest) == 1  # her one memory, found despite 300 nearer strangers
 
 
-def test_exact_mode_sees_exactly_one_scope(engine: MemoryEngine, store: PgStore) -> None:
+def test_exact_mode_sees_exactly_one_scope(engine: MemoryEngine, store: Store) -> None:
     """What S4's related-memory lookup uses: the scope itself — no shared rows, and a scope
     without a session does not reach into that user's sessions."""
     engine.remember(Fact("green tea, said in session 1"), Scope("ada", session_id="s1"))
@@ -226,7 +217,7 @@ def test_exact_mode_sees_exactly_one_scope(engine: MemoryEngine, store: PgStore)
     assert len(contents(Filters(ADA, include_shared=True))) == 3  # visible: all three
 
 
-def test_vector_search_reports_cosine_similarity(engine: MemoryEngine, store: PgStore) -> None:
+def test_vector_search_reports_cosine_similarity(engine: MemoryEngine, store: Store) -> None:
     engine.remember(Fact("green tea"), ADA)
     engine.remember(Fact("black coffee"), ADA)
     [vector] = FakeEmbedder().embed(["green tea"])

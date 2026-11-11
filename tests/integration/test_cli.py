@@ -15,7 +15,7 @@ from tests.conftest import TEST_SCHEMA, fake_engine
 
 
 @pytest.fixture
-def cli(store: PgStore, pg_url: str, monkeypatch: pytest.MonkeyPatch) -> CliRunner:
+def cli(pg_store: PgStore, pg_url: str, monkeypatch: pytest.MonkeyPatch) -> CliRunner:
     """`store` is asked for its migrated schema; the CLI opens its own pool on it."""
 
     monkeypatch.setattr(
@@ -173,7 +173,7 @@ def test_serve_refuses_a_public_address_without_keys(monkeypatch: pytest.MonkeyP
     assert (started[0]["host"], started[0]["port"]) == ("127.0.0.1", 8710)
 
 
-def test_maintain_prints_what_it_changed(cli: CliRunner, store: PgStore) -> None:
+def test_maintain_prints_what_it_changed(cli: CliRunner, pg_store: PgStore) -> None:
     from datetime import UTC, datetime, timedelta
 
     from lite_mem.engine import MemoryEngine
@@ -181,7 +181,7 @@ def test_maintain_prints_what_it_changed(cli: CliRunner, store: PgStore) -> None
     from lite_mem.types import Fact, Scope
 
     now = datetime.now(UTC)  # the CLI's engine runs on the real clock: write it two hours ago
-    earlier = MemoryEngine(store, "app", FakeEmbedder(), clock=lambda: now - timedelta(hours=2))
+    earlier = MemoryEngine(pg_store, "app", FakeEmbedder(), clock=lambda: now - timedelta(hours=2))
     gone = now - timedelta(hours=1)
     earlier.remember(Fact("parked on level 3", expires_at=gone), Scope(user_id="ada"))
     result = cli.invoke(app, ["maintain", "--user", "ada"])

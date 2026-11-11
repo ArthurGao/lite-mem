@@ -64,7 +64,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 | `Extractor` | `extract(messages, scope) -> list[FactDraft]` | `LlmExtractor`（`extract_facts.j2`，结构化输出） | `RuleExtractor`（测试与无模型时：每条 user 消息一条事实） |
 | `Resolver` | `resolve(new, related) -> Resolution` | `LlmResolver`（`resolve_conflict.j2`） | `NoopResolver`（只新增，用来和 mem0 2.2.1 的行为对照） |
 | `Embedder` | `embed(texts) -> vectors`，`dim`，`model` | Ollama `bge-m3` | fastembed（本地 MiniLM）、OpenAI 兼容 |
-| `Store` | 见 §4 | `PgStore` | `SqliteStore`（sqlite-vec + FTS5，S7b，嵌入式） |
+| `Store` | 见 §4 | `PgStore` | `SqliteStore`（sqlite-vec + 自己的倒排，S7b，嵌入式） |
 | `LLM` | `structured(role, system, user, schema)` | OpenAI 兼容（含 Ollama `/v1`） | Anthropic（extra） |
 
 - **角色（role）**：`extract`、`resolve`、`consolidate`。配置把角色映射到 provider 和模型；任何一次 LLM 调用都只说角色，不写模型名。
@@ -115,6 +115,15 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 - **一次写入一个事务**：记忆行、向量、倒排、历史事件同时成功或同时回滚。这是 mem0 2.2.1 没有的保证（它的历史在单独的 SQLite 文件里）。
 - 迁移用自己的 `litemem migrate`，和 lite-rag 的做法一致。
 
+### SQLite 后端（S7b，可选，extra `sqlite`）
+
+- `LITEMEM_DATABASE_URL=sqlite:///<文件>`：一个文件、不要服务，适合单机和嵌入式使用。打开时建表（`PRAGMA user_version` 记版本），`litemem migrate` 也可以。
+- 表和 PG 一样（`memories`、`memory_events`、`memory_postings`、`namespaces`、`idempotency`），向量放一张 `memory_vectors`（float32 blob）。约束也一样：profile 当前值的部分唯一索引、`valid_to >= valid_from`、`superseded_by` 外键延迟到提交时检查。
+- 向量：sqlite-vec 的 `vec_distance_cosine`，在过滤后的行里精确排序（和 PG 一样：先过滤再算距离；`vec0` 虚拟表先取最近的 k 条再过滤，会漏掉本 scope 的记忆，llm-steward 的 native store 就是这样）。
+- 关键词：不用 FTS5——它的 bm25 是另一套公式，两个 store 的排序会不同。用和 PG 一样的倒排表，分数用 `keyword.py` 的函数算，两个 store 排序相同。
+- 事务：每个线程一个连接，WAL，所有事务都 `BEGIN IMMEDIATE`，写者由数据库串行；PG 的行锁和 advisory lock 在这里不需要。读也要等写者（`busy_timeout` 默认 10 秒）：单机够用，并发写多就用 PG。
+- 时间存成固定宽度的 UTC ISO 文本（文本序就是时间序）；metadata 过滤按键做标量相等（`json_extract`）。
+
 ### Namespace（强制）
 
 - 引擎绑定一个 namespace（如 `app` 或 `steward/<namespace_id>`）。所有读写都带着它，没有能跨 namespace 的 API。
@@ -137,7 +146,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 - 结果 `MemoryHit(id, content, type, score, rel, scope, valid_from, valid_to)`。分数只在 lite-mem 内部可比。
 - 冲突消解用的"相关记忆"也走同一条检索，只是限定在**完全相同的 scope**内，并且只取当前生效的记忆。过滤条件有两种模式：`visible`（这个 scope 能看到的：自己的、没指定 session 时含它的所有 session、可选含共享）和 `exact`（恰好这个 scope，session 也要一致，不含共享）。
 - 向量检索在过滤后的行上精确计算距离（先物化该 scope 可见的行，再算余弦），返回 (id, 相似度)；按 scope 检索时一个 scope 只有千级记忆，精确算很便宜，也不会因为别的 scope 有更近的向量而漏召回。HNSW 索引留给以后不按 scope 的查询。
-- BM25 的契约：PgStore 和 `keyword.py` 的公式逐项相等（只在 PG 上测）；其他后端（S7b 的 SQLite/FTS5）只需要是"有排序的关键词匹配"，共享的合约测试只查排序性质。
+- BM25 的契约：两个 store 都和 `keyword.py` 的公式逐项相等（PgStore 在 SQL 里算，SqliteStore 用 `keyword.py` 的函数在 Python 里算），同一套测试在两个 store 上都查。
 
 ## 6. 整合与遗忘（S7）
 
@@ -262,7 +271,7 @@ lite-mem/
 | S5b 敏感信息 | 写入前由代码识别密码、卡号、证件号等（规则 + 可选的模型判断），按配置拒绝或打码；事件记下原因 | 合成集里的银行卡密码不再成为记忆；正常数字（电话分机、年份）不误伤；eval 重跑 |
 | S6 HTTP 服务 | FastAPI、API key、Problem Details、`Idempotency-Key`、Dockerfile、compose、CI 构建镜像 | 未授权 401，越权 namespace 403；`docker compose up` 后完成 add → search → history；库和 API 结果一致 |
 | S7 整合与遗忘 | 合并、归纳、过期、衰减遗忘；`litemem maintain`；复合事实被取代时不丢没变的部分（S6 发现） | FakeLLM 测试：相似记忆合并成一条且历史为 MERGE；过期的检索不到但 `as_of` 可见；用 eval 定合并阈值 |
-| S7b SQLite 后端（可选） | `SqliteStore`（sqlite-vec + FTS5），嵌入式运行 | 同一套 Store 合约测试在 PG 和 SQLite 上都通过 |
+| S7b SQLite 后端（可选） | `SqliteStore`（sqlite-vec + 自己的倒排），嵌入式运行 | 同一套 Store 合约测试在 PG 和 SQLite 上都通过 |
 | S8 收尾 | 整个引擎的 `/simplify` 和 Codex 审查，修复，重跑全部检查 | 审查结论记录在案 |
 | S9 接入 llm-steward | `LiteMemProvider`（库和 HTTP 两种）；llm-steward 的事件映射（UPDATE、DELETE）；合约测试；更新 llm-steward 设计文档 | llm-steward 的记忆合约测试在两种接入方式下都通过；手动端到端：对话 → 记忆 → 更新 → 检索 |
 | S10 记忆图谱（以后） | 实体和关系的抽取与查询 | 先写设计，再看 eval 的收益决定做不做 |
@@ -316,6 +325,10 @@ lite-mem/
   - 自己发现的：写入时 `expires_at` 已过的记忆让 `maintain` 违反 `valid_to >= valid_from` 检查、整次运行失败（CLI 测试撞出来的）——改为写入时拒绝，关闭时间也不早于 `valid_from`；eval 遇到 Ollama 偶发的 500（今天 12 次，S7 之前就有）整次中断、结果全丢——单次调用失败记一次 error，继续跑。
   - /simplify 后：Merge 并进 Add（`replaces` 是 0..n 个 id，`closes_as` 是 SUPERSEDE 或 MERGE），新记忆的构造只有一处（`_new_memory`），派生事实继承哪些字段只有一条规则（`_inherit`；原来三处各不相同，合并或拆出 remainder 会把会过期的记忆变成永久的）；派生事实的筛查只有一个入口（`_screened`）；`_embedded` 泛型化，去掉断言；`now` 每次 `maintain` 只取一次；遗忘的类型改为"配了半衰期的类型"；提示词里的记忆列表只有一个写法（`prompts.listed`）；合并提示词只允许"同一事实"，不再把不同的事实拼成一条（会重新制造 S6 的复合事实问题）；eval 的 Variant 显式带 maintain 开关，计数改名 `closed`。没做：每条记忆一次相似查询改成一条 SQL 自连接（离线、每个用户几秒，慢了再改）；把 maintenance 移出 engine.py（大量用到引擎的私有方法，拆开更糟）；按游标拉取事件的接口（S9 定）。
   - Codex：High 合并写入时只做了不加锁的检查、没核对来源仍在同一 scope、两次 `maintain` 并发会把同一组合并两次——改为写入事务里按 id 顺序加锁、复查（仍有效、同一 scope），不符合就跳过这一组；High profile 可以被配置成参与合并、丢掉 key——配置拒绝 `profile`，合并按类型分组；Medium 已过期但未关闭的记忆仍能被 `update` 等写操作当作当前——"当前"统一为 `Memory.holds_at`，profile 的旧值过期后写新值记 EXPIRE 而不是 SUPERSEDE；Medium 写入时已过期的 `expires_at`——拒绝；Medium 过期时未加锁——加锁复查。都先有失败的测试（变异检查）。不改：`keep` 策略下合并结果可能带出秘密——`keep` 是运营方明确的选择，模型生成的合并也照它办；性能——见上。
+- **S7b（2026-11-12）**：`SqliteStore`（extra `sqlite`，sqlite-vec 0.1.9），`LITEMEM_DATABASE_URL=sqlite:///<文件>` 选用；做法见 §4。验收：测试的 `store` fixture 参数化成 PG 和 SQLite，所有 store 层的测试（写入、取代、幂等、并发、故障注入、检索、BM25 与 `keyword.py` 逐项相等、过期、合并、敏感信息）在两个 store 上都跑；只依赖 PG 本身的（HNSW 扫描、CLI 和 eval 的 schema、psycopg 连接）用 `pg_store`。另有 SQLite 的端到端测试（真实 factory 和 CLI，只换 embedding）。
+  - 自己发现的：SQLite 下测试偶发失败——`uuid7()` 在同一毫秒内的两个 id 顺序随机，而列表在时间相同时按 id 排序；PG 每次写入都有网络往返，很少落在同一毫秒，所以一直没暴露。`uuid7()` 改成单调（RFC 9562 §6.2 方法 3：毫秒 + 74 位计数器，同一毫秒或时钟回拨时加一），先有失败的测试；修完 SQLite 那一半连跑八次都绿。
+  - /simplify 后：scope 隔离规则（`own_rows`）、namespace 绑定检查（`check_binding`）、列清单（`MEMORY_COLUMNS`）两个 store 共用；SQLite 带共享记忆时改成两次索引查找（`EXPLAIN QUERY PLAN` 证实原来的 `ns AND (own OR shared)` 会扫整个 namespace）；合并分组时每次相似查询一个短事务（SQLite 每个事务都持写锁，一整轮分组会让所有读写排队）；uuid7 简化成（毫秒，计数器）；测试的 helper 收拢、类型标注改成 `Store`；CLI 和 factory 共用 `is_sqlite`。没做：只读事务用 `BEGIN DEFERRED`（要改 Store 接口，合并分组改成短事务后收益很小）；`erase` 里清 `superseded_by` 的那句（公开 API 不会产生跨用户的链接，取代只在同一 scope 内，两个 store 都只是防御）。
+  - Codex：P1 SQLite 的 metadata 过滤是逐键相等，PG 是 jsonb 包含（`@>`：嵌套对象只要包含、数组只要有、`true` 不等于 `1`）——SQLite 注册一个和 jsonb 包含规则相同的函数，同一个测试在两个 store 上查；P2 `close()` 会关掉别的线程正在用的连接——等进行中的事务结束再关，之后的事务报"已关闭"；P2 不带时区的时间在 SQLite 按本机时区、在 PG 按会话时区——引擎入口拒绝（`as_of`、`expires_at`）；P2 uuid7 在时间戳上限会回绕——报错（公元 10889 年）。都先有失败的测试（变异检查）。
 
 ## 13. 待确认
 

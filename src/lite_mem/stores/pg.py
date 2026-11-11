@@ -15,17 +15,21 @@ from psycopg_pool import ConnectionPool
 
 from lite_mem.config import own_schema
 from lite_mem.db import require_url
-from lite_mem.errors import ConfigError, Conflict, StoreError
+from lite_mem.errors import ConfigError, StoreError
 from lite_mem.keyword import K1, B, term_counts, terms
-from lite_mem.stores.base import Filters
+from lite_mem.stores.base import (
+    MEMORY_COLUMNS,
+    SHARED,
+    Filters,
+    check_binding,
+    own_rows,
+    with_shared,
+)
 from lite_mem.types import EventOp, HistoryEntry, Memory, Scope
 
 MAX_DIM = 2000  # pgvector's HNSW limit for `vector`
 
-_COLUMNS = (
-    "id, user_id, agent_id, session_id, type, key, content, importance, confidence, valid_from, "
-    "valid_to, superseded_by, expires_at, source, metadata, access_count, created_at, updated_at"
-)
+_COLUMNS = MEMORY_COLUMNS
 
 _INSERT = (
     f"INSERT INTO memories (namespace, {_COLUMNS}) "
@@ -57,18 +61,8 @@ def _memory(row: dict[str, Any]) -> Memory:
 def _where(f: Filters) -> tuple[str, dict[str, Any]]:
     """The SQL condition on `memories m` and its parameters for `f` (plain predicates the planner
     can index)."""
-    fields = [("user_id", f.scope.user_id), ("agent_id", f.scope.agent_id)]
-    if f.mode == "exact" or f.scope.session_id is not None:
-        fields.append(("session_id", f.scope.session_id))
-    own = " AND ".join(
-        f"m.{column} = %({column})s" if value is not None else f"m.{column} IS NULL"
-        for column, value in fields
-    )
-    shared = (
-        " OR (m.user_id IS NULL AND m.agent_id IS NULL)"
-        if f.include_shared and f.mode == "visible"
-        else ""
-    )
+    own = own_rows(f, lambda name: f"%({name})s")
+    shared = f" OR ({SHARED})" if with_shared(f) else ""
     when = (
         "m.valid_from <= %(as_of)s AND (m.valid_to IS NULL OR m.valid_to > %(as_of)s)"
         " AND (m.expires_at IS NULL OR m.expires_at > %(as_of)s)"
@@ -126,19 +120,7 @@ class PgTx:
             (namespace,),
         )
         assert row is not None
-        wanted = {
-            "embedding_provider": provider,
-            "embedding_model": model,
-            "dim": dim,
-            "tokenizer": tokenizer,
-        }
-        differs = {k: (row[k], v) for k, v in wanted.items() if row[k] != v}
-        if differs:
-            said = ", ".join(f"{k} {had!r} (asked {got!r})" for k, (had, got) in differs.items())
-            raise Conflict(
-                f"namespace {namespace!r} was built with another index configuration: {said}; "
-                "open it with that configuration, or use a new namespace"
-            )
+        check_binding(namespace, row, provider=provider, model=model, dim=dim, tokenizer=tokenizer)
         if dim > MAX_DIM:
             raise ConfigError(f"embedding dim {dim} is over pgvector's HNSW limit ({MAX_DIM})")
         self._dims[namespace] = dim

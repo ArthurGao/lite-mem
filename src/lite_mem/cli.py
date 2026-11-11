@@ -38,6 +38,13 @@ def version() -> None:
 def migrate_command() -> None:
     """Create or update the schema on LITEMEM_DATABASE_URL."""
     settings = Settings()
+    if factory.is_sqlite(settings.database_url):
+        try:
+            factory.open_store(settings).close()  # a SQLite file gets its schema when opened
+        except LiteMemError as exc:
+            _fail(str(exc))
+        typer.echo(f"{settings.database_url} is ready")
+        return
     try:
         with connect(settings.database_url) as conn:
             applied = migrate(conn, settings.db_schema)

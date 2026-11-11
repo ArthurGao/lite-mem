@@ -9,7 +9,7 @@ from lite_mem.errors import InvalidRequest
 from lite_mem.extract import LlmExtractor
 from lite_mem.resolve import LlmResolver
 from lite_mem.sensitive import Policy
-from lite_mem.stores.pg import PgStore
+from lite_mem.stores.base import Store
 from lite_mem.testing import FakeEmbedder, FakeLLM, update_when, user_lines
 from lite_mem.types import Fact, Message, Scope
 
@@ -17,7 +17,7 @@ ADA = Scope(user_id="ada")
 SAID = ["住在上海", "我的银行卡密码是 482915", "card 4111 1111 1111 1111 is my visa"]
 
 
-def _engine(store: PgStore, sensitive: Policy) -> MemoryEngine:
+def _engine(store: Store, sensitive: Policy) -> MemoryEngine:
     llm = FakeLLM(extract=user_lines, resolve=update_when("搬"))
     return MemoryEngine(
         store, "app", FakeEmbedder(), extractor=LlmExtractor(llm), resolver=LlmResolver(llm),
@@ -30,7 +30,7 @@ def _current(engine: MemoryEngine) -> list[str]:
 
 
 @pytest.mark.parametrize("infer", [True, False])
-def test_drop_keeps_secrets_out_of_derived_memories(store: PgStore, infer: bool) -> None:
+def test_drop_keeps_secrets_out_of_derived_memories(store: Store, infer: bool) -> None:
     engine = _engine(store, "drop")
     events = engine.add([Message("user", t) for t in SAID], ADA, infer=infer)
     assert _current(engine) == ["住在上海"]
@@ -39,7 +39,7 @@ def test_drop_keeps_secrets_out_of_derived_memories(store: PgStore, infer: bool)
     assert "482915" not in repr(history)
 
 
-def test_mask_keeps_the_fact_without_the_value(store: PgStore) -> None:
+def test_mask_keeps_the_fact_without_the_value(store: Store) -> None:
     engine = _engine(store, "mask")
     engine.add([Message("user", t) for t in SAID], ADA)
     assert _current(engine) == [
@@ -49,13 +49,13 @@ def test_mask_keeps_the_fact_without_the_value(store: PgStore) -> None:
     ]
 
 
-def test_keep_stores_what_was_said(store: PgStore) -> None:
+def test_keep_stores_what_was_said(store: Store) -> None:
     engine = _engine(store, "keep")
     engine.add([Message("user", SAID[1])], ADA)
     assert _current(engine) == ["我的银行卡密码是 482915"]
 
 
-def test_an_explicit_secret_is_refused_under_drop(store: PgStore) -> None:
+def test_an_explicit_secret_is_refused_under_drop(store: Store) -> None:
     engine = _engine(store, "drop")
     with pytest.raises(InvalidRequest, match="credential"):
         engine.remember(Fact("wifi password is tiger-77"), ADA)
@@ -65,7 +65,7 @@ def test_an_explicit_secret_is_refused_under_drop(store: PgStore) -> None:
     assert _current(engine) == ["wifi is in the hallway"]
 
 
-def test_a_reason_never_carries_a_secret_into_history(store: PgStore) -> None:
+def test_a_reason_never_carries_a_secret_into_history(store: Store) -> None:
     engine = _engine(store, "drop")
     [event] = engine.remember(Fact("works in an office"), ADA)
     engine.update(event.memory_id, "works remotely", reason="told us her PIN is 482915")
@@ -75,7 +75,7 @@ def test_a_reason_never_carries_a_secret_into_history(store: PgStore) -> None:
     assert "told us her PIN is [redacted]" in history
 
 
-def test_an_explicit_secret_is_masked_under_mask(store: PgStore) -> None:
+def test_an_explicit_secret_is_masked_under_mask(store: Store) -> None:
     engine = _engine(store, "mask")
     engine.remember(Fact("wifi password is tiger-77"), ADA)
     assert _current(engine) == ["wifi password is [redacted]"]

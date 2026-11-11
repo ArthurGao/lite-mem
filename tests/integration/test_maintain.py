@@ -13,7 +13,7 @@ from lite_mem.config import MaintainConfig
 from lite_mem.consolidate import LlmConsolidator
 from lite_mem.engine import MemoryEngine
 from lite_mem.errors import Conflict, InvalidRequest
-from lite_mem.stores.pg import PgStore
+from lite_mem.stores.base import Store
 from lite_mem.testing import FakeEmbedder, FakeLLM, Handler, memory
 from lite_mem.types import Fact, Scope
 from tests.conftest import Clock
@@ -81,7 +81,7 @@ def test_a_new_profile_value_after_the_old_one_expired_records_the_expiry(
 
 
 def _maintaining(
-    store: PgStore, clock: Clock, *, consolidate: Handler | None = None, **config: Any
+    store: Store, clock: Clock, *, consolidate: Handler | None = None, **config: Any
 ) -> tuple[MemoryEngine, FakeLLM]:
     llm = FakeLLM(consolidate=consolidate or _same)
     engine = MemoryEngine(
@@ -101,7 +101,7 @@ def _current(engine: MemoryEngine, scope: Scope = ADA) -> list[str]:
     return sorted(m.content for m in engine.list_memories(scope))
 
 
-def test_similar_memories_merge_into_one_with_merge_history(store: PgStore, clock: Clock) -> None:
+def test_similar_memories_merge_into_one_with_merge_history(store: Store, clock: Clock) -> None:
     engine, llm = _maintaining(store, clock)
     [a] = engine.remember(Fact("likes green tea", importance=0.4), ADA)
     [b] = engine.remember(Fact("likes green tea every morning", importance=0.7), ADA)
@@ -126,7 +126,7 @@ def test_similar_memories_merge_into_one_with_merge_history(store: PgStore, cloc
     assert engine.maintain().merged == 0 and len(llm.calls) == 1  # nothing left to merge
 
 
-def test_the_model_can_say_they_are_different_facts(store: PgStore, clock: Clock) -> None:
+def test_the_model_can_say_they_are_different_facts(store: Store, clock: Clock) -> None:
     def different(payload: dict[str, Any]) -> dict[str, Any]:
         return {"same": False, "content": None, "reason": "two cities"}
 
@@ -137,7 +137,7 @@ def test_the_model_can_say_they_are_different_facts(store: PgStore, clock: Clock
     assert _current(engine) == ["lives in Auckland", "lives in Wellington"]
 
 
-def test_only_one_scopes_semantic_memories_merge(store: PgStore, clock: Clock) -> None:
+def test_only_one_scopes_semantic_memories_merge(store: Store, clock: Clock) -> None:
     engine, llm = _maintaining(store, clock)
     engine.remember(Fact("likes green tea"), ADA)
     engine.remember(Fact("likes green tea"), BOB)  # another person
@@ -146,7 +146,7 @@ def test_only_one_scopes_semantic_memories_merge(store: PgStore, clock: Clock) -
     assert engine.maintain().merged == 0 and llm.calls == []
 
 
-def test_a_merged_fact_is_screened_like_any_derived_fact(store: PgStore, clock: Clock) -> None:
+def test_a_merged_fact_is_screened_like_any_derived_fact(store: Store, clock: Clock) -> None:
     def leaky(payload: dict[str, Any]) -> dict[str, Any]:
         return {"same": True, "content": "likes green tea, PIN 482915", "reason": "r"}
 
@@ -157,7 +157,7 @@ def test_a_merged_fact_is_screened_like_any_derived_fact(store: PgStore, clock: 
     assert _current(engine) == ["likes green tea", "likes green tea a lot"]
 
 
-def test_old_episodes_are_summarised_when_enabled(store: PgStore, clock: Clock) -> None:
+def test_old_episodes_are_summarised_when_enabled(store: Store, clock: Clock) -> None:
     def summary(payload: dict[str, Any]) -> dict[str, Any]:
         refunds = [e["id"] for e in payload["EPISODES"] if "refund" in e["fact"]]
         return {"facts": [{"content": "asks about refunds every Friday", "sources": refunds},
@@ -184,7 +184,7 @@ def test_old_episodes_are_summarised_when_enabled(store: PgStore, clock: Clock) 
     }
 
 
-def test_idle_low_weight_episodes_are_forgotten_when_enabled(store: PgStore, clock: Clock) -> None:
+def test_idle_low_weight_episodes_are_forgotten_when_enabled(store: Store, clock: Clock) -> None:
     engine, _ = _maintaining(
         store, clock, merge_threshold=None, forget_below=0.3, forget_idle_days=30
     )
@@ -208,9 +208,7 @@ def test_forgetting_and_summarising_are_off_by_default() -> None:
     assert config.merge_threshold == 0.92
 
 
-def test_a_group_that_changed_during_the_model_call_is_skipped(
-    store: PgStore, clock: Clock
-) -> None:
+def test_a_group_that_changed_during_the_model_call_is_skipped(store: Store, clock: Clock) -> None:
     holder: dict[str, MemoryEngine] = {}
 
     def meanwhile(payload: dict[str, Any]) -> dict[str, Any]:
@@ -225,7 +223,7 @@ def test_a_group_that_changed_during_the_model_call_is_skipped(
     assert _current(engine) == ["likes green tea every morning"]  # untouched, not merged
 
 
-def test_two_runs_at_once_merge_a_group_once(store: PgStore, clock: Clock) -> None:
+def test_two_runs_at_once_merge_a_group_once(store: Store, clock: Clock) -> None:
     holder: dict[str, Any] = {"inner": None}
 
     def racing(payload: dict[str, Any]) -> dict[str, Any]:
@@ -243,7 +241,7 @@ def test_two_runs_at_once_merge_a_group_once(store: PgStore, clock: Clock) -> No
     assert _current(engine) == ["likes green tea every morning"]  # one merged memory, not two
 
 
-def test_a_merge_never_crosses_scopes(store: PgStore, clock: Clock) -> None:
+def test_a_merge_never_crosses_scopes(store: Store, clock: Clock) -> None:
     """Defence in depth: the groups come from one scope's query, but the write checks again."""
     engine, _ = _maintaining(store, clock)
     [bobs] = engine.remember(Fact("likes green tea"), BOB)
@@ -253,7 +251,7 @@ def test_a_merge_never_crosses_scopes(store: PgStore, clock: Clock) -> None:
     assert engine.get(bobs.memory_id).current and _current(engine) == []
 
 
-def test_types_merge_only_with_their_own_kind(store: PgStore, clock: Clock) -> None:
+def test_types_merge_only_with_their_own_kind(store: Store, clock: Clock) -> None:
     engine, llm = _maintaining(store, clock)
     engine.remember(Fact("likes green tea"), ADA)
     engine.remember(Fact("likes green tea", type="procedural"), ADA)
@@ -263,7 +261,7 @@ def test_types_merge_only_with_their_own_kind(store: PgStore, clock: Clock) -> N
 
 
 def test_a_merged_memory_expires_only_when_all_its_sources_would(
-    store: PgStore, clock: Clock
+    store: Store, clock: Clock
 ) -> None:
     engine, _ = _maintaining(store, clock)
     later = clock.now + timedelta(days=9)
