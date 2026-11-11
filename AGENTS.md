@@ -24,15 +24,17 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S2 — store and direct writes** (design §12). S0 and S1 done 2026-11-12.
+**S3 — search** (design §12). S0–S2 done 2026-11-12.
 
 ## Rules
 
 1. **Every component is a Protocol** (`Extractor`, `Resolver`, `Embedder`, `Store`, `LLM`); the engine depends
    on Protocols only. Swapping an implementation is config.
 2. **Namespaces are mandatory**: an engine is bound to one namespace; no API reads or writes across namespaces.
-3. **Invalidate, never delete**: update, delete, merge and expiry set `valid_to` / `superseded_by` and append a
-   history event; `as_of` sees the past. The only hard delete is `erase(user_id)`.
+3. **Invalidate, never delete**: a changed fact SUPERSEDEs (a new id; the old row gets `valid_to` /
+   `superseded_by`); delete, merge and expiry close the row; every change appends a history event and `as_of`
+   sees the past. CORRECT (fixing a fact's wording) edits in place, same id. The only hard delete is
+   `erase(user_id)`. Every write goes through `MemoryEngine._apply`.
 4. **One write, one transaction**: a memory's row, vector, postings and history event commit together.
    An `idempotency_key` makes a retried write a no-op that returns the first result.
 5. **The model proposes, code decides**: structured output (Pydantic) for every LLM call; an UPDATE/DELETE

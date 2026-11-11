@@ -4,10 +4,16 @@ recreate."""
 
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
 from psycopg import sql
+
+from lite_mem.db import migrate
+from lite_mem.engine import MemoryEngine
+from lite_mem.stores.pg import PgStore
+from lite_mem.testing import FakeEmbedder
 
 TEST_SCHEMA = "lite_mem_test"
 
@@ -39,3 +45,39 @@ def pg(pg_url: str) -> Iterator[psycopg.Connection]:
         conn.execute(drop)
         yield conn
         conn.execute(drop)
+
+
+class Clock:
+    """A controllable clock: starts at a fixed instant, moves only when told."""
+
+    def __init__(self) -> None:
+        self.now = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def tick(self, seconds: float = 60) -> None:
+        self.now += timedelta(seconds=seconds)
+
+
+@pytest.fixture
+def migrated(pg: psycopg.Connection) -> psycopg.Connection:
+    migrate(pg, TEST_SCHEMA)
+    return pg
+
+
+@pytest.fixture
+def store(migrated: psycopg.Connection, pg_url: str) -> Iterator[PgStore]:
+    s = PgStore(pg_url, TEST_SCHEMA)
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def clock() -> Clock:
+    return Clock()
+
+
+@pytest.fixture
+def engine(store: PgStore, clock: Clock) -> MemoryEngine:
+    return MemoryEngine(store, "app", FakeEmbedder(), clock=clock)

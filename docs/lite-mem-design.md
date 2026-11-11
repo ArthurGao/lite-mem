@@ -89,7 +89,16 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 | `metadata` | 调用方的键值，可以过滤（等值） |
 | `access_count`、`last_accessed_at` | 检索命中时更新，用于衰减和遗忘 |
 
-历史表 `memory_events` 只追加：`(memory_id, op, before, after, reason, produced_by, at)`，op 为 `ADD / UPDATE / DELETE / MERGE / EXPIRE`。
+历史表 `memory_events` 只追加：`(memory_id, op, before, after, reason, produced_by, at)`。op 有：
+
+- `ADD`：新记忆；
+- `CORRECT`：原地更正措辞，id 不变（同一事实写得更好）；
+- `SUPERSEDE`：事实变了，新 id 取代旧行，旧行写 `valid_to` 和 `superseded_by`（profile key 的新值、冲突消解的 UPDATE 决定都落成这个）；
+- `DELETE`：退役；
+- `MERGE`：合并（S7）；
+- `EXPIRE`：过期（S7）。
+
+所有写操作都经过引擎的同一个入口 `_apply`（新增、取代、更正、退役），都记 `produced_by`；整批在一个事务里。
 
 ## 4. 存储与 id
 
@@ -113,7 +122,8 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 
 ### 通用规则
 
-- **只失效、不删除**：更新、删除、合并、过期都只写 `valid_to` 和历史，`as_of` 能回看。
+- **只失效、不删除**：取代、删除、合并、过期都只写 `valid_to` 和历史，`as_of` 能回看。
+- **更正对 `as_of` 追溯生效**：`CORRECT` 改的是同一事实的措辞，`as_of` 看到的是更正后的文字；改前的文字在历史里。事实本身变了要用取代，不要用更正。
 - **索引绑定模型**：换 embedding 模型要新建 namespace 并重建（`litemem reindex`），不能就地替换。
 - **幂等**：调用方可以带 `idempotency_key`（例如 episode id）。同一个 key 的写入只执行一次，重试会返回第一次的结果。mem0 2.2.1 没有这个保证，llm-steward 需要它。
 
@@ -189,14 +199,14 @@ llm-steward 新增 `LiteMemProvider`，实现它的 `MemoryProvider` Protocol，
 
 | llm-steward 调用 | lite-mem 实现 |
 | --- | --- |
-| `add(messages, scope, infer)` | `add`，带 `idempotency_key`（批次里最后一个 episode 的 id），返回 `MemoryEvent[]`（ADD / UPDATE / DELETE，带 `produced_by`） |
+| `add(messages, scope, infer)` | `add`，带 `idempotency_key`（批次里最后一个 episode 的 id），返回 `MemoryEvent[]`（ADD / SUPERSEDE / DELETE，带 `produced_by`） |
 | `search(query, scope, top_k, filters)` | `search` |
-| `get / update / delete / list` | 同名方法 |
+| `get / update / delete / list` | `get`、`update`（= CORRECT，id 不变）、`delete`、`list_memories` |
 | `health()` | 存储可用，且 embedding 服务可用 |
 
 - **能力**：`{extract, resolves_conflicts, update, delete, metadata_filter}`。
 - **llm-steward 那边要改的**：现在的 `ExtractionService` 只把引擎的 ADD 事件写进镜像（mem0 2.2.1 只会新增）。引擎自己会消解冲突时，要把以下事件映射成治理操作，让历史仍在 llm-steward 里：
-  - UPDATE 映射成 `SupersedeMemory`；
+  - SUPERSEDE（`replaced` 是被取代的记忆）映射成 `SupersedeMemory`；
   - DELETE 映射成 `DeleteMemory`。
 - **另一个选择**：llm-steward 用 lite-mem 时关掉引擎内的冲突消解，只用抽取，继续走 llm-steward 自己的冲突补偿。见 §13。
 - **治理规则仍由 llm-steward 保证**：
@@ -239,7 +249,7 @@ lite-mem/
 | --- | --- | --- |
 | S0 环境 | 确认 Ollama 上有 `bge-m3`、`qwen3:8b`；共享 PG 上建库或 schema `lite_mem` 和角色；用文档核对 psycopg、pgvector、jieba、FastAPI、OpenAI/Anthropic SDK 的版本和 API，并锁定；建项目 KB `projects/lite-mem/` | 版本写进 `pyproject.toml`；`psql` 能连上，`vector` 扩展可用；KB 建好并通过校验 |
 | S1 骨架 | uv、ruff、mypy、pytest、配置、fakes（FakeLLM、FakeEmbedder）、CLI 骨架、`litemem migrate`、CI（含镜像构建的占位） | `litemem --help` 可用；迁移在测试 schema 上执行通过；CI 绿 |
-| S2 存储与直接写入 | `PgStore`；`add(infer=false)`、`get`、`list`、`update`、`delete`、`erase`；历史事件；`as_of`；profile key 取代；幂等键 | 一次写入一个事务（故障注入时整体回滚）；更新后旧版本在 `as_of` 下仍可见；`erase` 之后该用户什么都不剩；同一幂等键只写一次 |
+| S2 存储与直接写入 | `PgStore`；`add(infer=false)`、`get`、`list_memories`、`update`（更正）、`delete`、`erase`；历史事件；`as_of`；profile key 取代；幂等键 | 一次写入一个事务（故障注入时整体回滚）；取代后旧版本在 `as_of` 下仍可见；`erase` 之后该用户什么都不剩；同一幂等键只写一次 |
 | S3 检索 | 向量 + 自写 BM25（jieba）+ RRF；重要性、衰减、置信度权重；scope、类型、metadata 过滤 | BM25 与手算一致；融合顺序正确；共享记忆和自己的记忆都能找到，别人的找不到；`-m ollama` 真实往返 |
 | S4 抽取与冲突消解 | `Extractor`、`Resolver`（从 llm-steward 移植，提示词放进 `prompts/`）；`add(infer=true)` 完整流水线；事件带出处 | FakeLLM 测试：北京→上海是 UPDATE（旧的失效）、重复是 NOOP、越界目标按 ADD；整批一个事务；重试（同一幂等键）不会再调模型 |
 | S5 评测 | 合成对话集与标注、`litemem eval`、mem0 对照脚本 | 用本地 Ollama 跑出对比表：只新增 vs 消解、两版抽取提示词、lite-mem vs mem0；结果记进 KB |
@@ -257,6 +267,10 @@ lite-mem/
   - /simplify 后：每个角色可单独指定 provider、端点和模型（`LITEMEM_LLM__ROLES={"resolve": {"provider": "anthropic", "model": …}}`，换了 provider 就不沿用默认的端点和 key）；LLM 接口改收 payload 字典，由客户端序列化；namespace 记录分词器；只留一个 `errors.redact()`（整段连接串按 libpq 解析，其余按模式），在 CLI 出口统一脱敏；namespace 和 schema 用 pydantic 注解类型校验。没做：错误类先保留（S2 起就用到）；迁移"已是最新"时的往返次数、测试每次重建 schema（迁移少时无所谓，S2 再看）。
   - 自己发现的 bug：schema 字段带别名 `schema` 时，pydantic-settings 从不带前缀的 `SCHEMA` 读，测试设置的 `LITEMEM_SCHEMA` 没生效，迁移测试实际跑在了应用 schema 上。字段改名 `db_schema`（`LITEMEM_DB_SCHEMA`），不用别名；应用 schema 当时是空的，已删除重建。
   - Codex：P2 拒绝 `public` 和系统 schema（配置和 `migrate()` 两处都查）——修了；P2 错误原文可能带连接信息——由 CLI 出口统一脱敏，测试在边界制造一条带密码的错误来验证；P1"`conn.execute` 不接受 bytes"——不成立：psycopg 3 的查询参数接受 `bytes`，本阶段的测试实际执行了迁移，lite-rag 同样这么用。
+- **S2（2026-11-12）**：迁移 0002（`memories`、`memory_events`、`idempotency`），`PgStore`，`MemoryEngine` 的直接写入、取代、更正、退役、彻底删除、历史、`as_of`、幂等。
+  - /simplify 后：操作命名定为 ADD / CORRECT / SUPERSEDE / DELETE（冲突消解的 UPDATE 决定落成 SUPERSEDE，S9 映射跟着改）；所有写操作走一个 `_apply`，都带 `produced_by`，S3 只需在这里加向量和倒排；幂等先只读查（`replay`），再在事务里认领，S4 重试就不会再调模型；`superseded_by` 加索引；`current_profile` 的条件和唯一索引的表达式一致、列表查询按字段拼条件，能用上索引；`history` 一次查询；事件序列化交给 pydantic；`MEMORY_TYPES` 从 Literal 推出。没做：一次写入多条时的往返合并（pipeline、批量插入）——批次小，等 eval 量出瓶颈再做；只读查询不开事务；`Fact` 改用 pydantic 校验；`last_accessed_at` 留给 S3（检索命中时更新）。
+  - Codex：High 幂等键被另一个用户复用会拿到前一个用户的结果——改为拒绝（Conflict）；High 同一 profile key 第一次并发写会撞唯一索引——按 (namespace, scope, key) 加事务级 advisory lock；Medium 空字符串和 NULL 在唯一索引里相同——拒绝空的 scope id；Medium `as_of` 看到更正后的措辞——按设计（更正追溯生效，见 §4），写进文档。每条修复都先有失败的测试，并做了变异检查。
+  - 自己发现的：取代时先关旧行（腾出唯一的"当前值"位置）再插新行，`superseded_by` 外键要延迟到提交时检查（`DEFERRABLE INITIALLY DEFERRED`）。
 
 ## 13. 待确认
 
