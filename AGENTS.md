@@ -24,11 +24,11 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S8 — whole-engine close-out** (design §12). S0–S7b done 2026-11-12; eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
+**S8b — BM25 statistics per scope, then S9** (design §12, §13). S0–S8 done 2026-11-12; eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
 
 ## Rules
 
-1. **Every component is a Protocol** (`Extractor`, `Resolver`, `Embedder`, `Store`, `LLM`); the engine depends
+1. **Every component is a Protocol** (`Extractor`, `Resolver`, `Consolidator`, `Embedder`, `Store`, `LLM`); the engine depends
    on Protocols only. Swapping an implementation is config.
 2. **Namespaces are mandatory**: an engine is bound to one namespace; no API reads or writes across namespaces.
 3. **Invalidate, never delete**: a changed fact SUPERSEDEs (a new id; the old row gets `valid_to` /

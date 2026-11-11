@@ -80,14 +80,34 @@ def _key(target: ModelTarget) -> str | None:
     return target.api_key.get_secret_value() if target.api_key else None
 
 
-class OpenAICompatibleLLM:
-    """Chat completions with a strict JSON schema (`response_format`): any OpenAI-compatible
-    endpoint — Ollama `/v1`, llm-gateway, a vendor. One client per (endpoint, key)."""
+class _VendorLLM:
+    """What both vendors' clients share: the config, one SDK client per (endpoint, key), and the
+    user turn (the payload as JSON)."""
 
     def __init__(self, config: LLMConfig, client: Any | None = None) -> None:
         self._config = config
         self._client = client  # tests: one fake client for every role
         self._clients: dict[tuple[str | None, str | None], Any] = {}
+
+    def _sdk(self, target: ModelTarget) -> Any:
+        if self._client is not None:
+            return self._client
+        slot = (target.base_url, _key(target))
+        if slot not in self._clients:
+            self._clients[slot] = self._make(target)
+        return self._clients[slot]
+
+    def _make(self, target: ModelTarget) -> Any:
+        raise NotImplementedError
+
+    @staticmethod
+    def _user_turn(payload: Mapping[str, Any]) -> dict[str, str]:
+        return {"role": "user", "content": json.dumps(dict(payload), ensure_ascii=False)}
+
+
+class OpenAICompatibleLLM(_VendorLLM):
+    """Chat completions with a strict JSON schema (`response_format`): any OpenAI-compatible
+    endpoint — Ollama `/v1`, llm-gateway, a vendor."""
 
     def structured[T: BaseModel](
         self, role: Role, system: str, payload: Mapping[str, Any], schema: type[T]
@@ -96,10 +116,7 @@ class OpenAICompatibleLLM:
         try:
             response = self._sdk(target).chat.completions.create(
                 model=target.model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(dict(payload), ensure_ascii=False)},
-                ],
+                messages=[{"role": "system", "content": system}, self._user_turn(payload)],
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
@@ -121,25 +138,15 @@ class OpenAICompatibleLLM:
         content = choice.message.content if choice is not None else None
         return _parsed(role, schema, content, provenance), provenance
 
-    def _sdk(self, target: ModelTarget) -> Any:
-        if self._client is not None:
-            return self._client
+    def _make(self, target: ModelTarget) -> Any:
         from openai import OpenAI
 
-        slot = (target.base_url, _key(target))
-        if slot not in self._clients:
-            self._clients[slot] = OpenAI(base_url=target.base_url, api_key=_key(target) or "unused")
-        return self._clients[slot]
+        return OpenAI(base_url=target.base_url, api_key=_key(target) or "unused")
 
 
-class AnthropicLLM:
+class AnthropicLLM(_VendorLLM):
     """Anthropic Messages with one forced tool whose input schema is the role's output model (the
-    `anthropic` extra). One client per (endpoint, key)."""
-
-    def __init__(self, config: LLMConfig, client: Any | None = None) -> None:
-        self._config = config
-        self._client = client  # tests
-        self._clients: dict[tuple[str | None, str | None], Any] = {}
+    `anthropic` extra)."""
 
     def structured[T: BaseModel](
         self, role: Role, system: str, payload: Mapping[str, Any], schema: type[T]
@@ -151,34 +158,25 @@ class AnthropicLLM:
                 model=target.model,
                 max_tokens=2048,
                 system=system,
-                messages=[
-                    {"role": "user", "content": json.dumps(dict(payload), ensure_ascii=False)}
-                ],
+                messages=[self._user_turn(payload)],
                 tools=[{"name": name, "input_schema": strict_schema(schema)}],
                 tool_choice={"type": "tool", "name": name},
                 timeout=target.timeout_s,
             )
         except Exception as exc:
             raise _failed(role, target, exc) from exc
-        provenance = Provenance(role, "anthropic", response.model or target.model)
+        provenance = Provenance(role, target.provider, response.model or target.model)
         if response.stop_reason == "max_tokens":
             raise ModelError(f"{role}: reply truncated ({provenance.tag})")
         used = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
         return _parsed(role, schema, used[0].input if used else None, provenance), provenance
 
-    def _sdk(self, target: ModelTarget) -> Any:
-        if self._client is not None:
-            return self._client
-        slot = (target.base_url, _key(target))
-        if slot not in self._clients:
-            try:
-                from anthropic import Anthropic
-            except ImportError as exc:
-                raise ConfigError(
-                    "provider anthropic needs the extra: lite-mem[anthropic]"
-                ) from exc
-            self._clients[slot] = Anthropic(api_key=_key(target), base_url=target.base_url)
-        return self._clients[slot]
+    def _make(self, target: ModelTarget) -> Any:
+        try:
+            from anthropic import Anthropic
+        except ImportError as exc:
+            raise ConfigError("provider anthropic needs the extra: lite-mem[anthropic]") from exc
+        return Anthropic(api_key=_key(target), base_url=target.base_url)
 
 
 class RoutedLLM:

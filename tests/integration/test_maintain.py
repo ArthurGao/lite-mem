@@ -16,7 +16,7 @@ from lite_mem.errors import Conflict, InvalidRequest
 from lite_mem.stores.base import Store
 from lite_mem.testing import FakeEmbedder, FakeLLM, Handler, memory
 from lite_mem.types import Fact, Scope
-from tests.conftest import Clock
+from tests.conftest import Clock, current
 
 ADA = Scope(user_id="ada")
 BOB = Scope(user_id="bob")
@@ -97,10 +97,6 @@ def _same(payload: dict[str, Any]) -> dict[str, Any]:
     return {"same": True, "content": longest, "reason": "same fact"}
 
 
-def _current(engine: MemoryEngine, scope: Scope = ADA) -> list[str]:
-    return sorted(m.content for m in engine.list_memories(scope))
-
-
 def test_similar_memories_merge_into_one_with_merge_history(store: Store, clock: Clock) -> None:
     engine, llm = _maintaining(store, clock)
     [a] = engine.remember(Fact("likes green tea", importance=0.4), ADA)
@@ -109,7 +105,7 @@ def test_similar_memories_merge_into_one_with_merge_history(store: Store, clock:
     clock.tick()
     report = engine.maintain()
     assert report.merged == 2 and len(llm.calls) == 1
-    assert _current(engine) == ["likes green tea every morning", "works as a nurse"]
+    assert current(engine) == ["likes green tea every morning", "works as a nurse"]
     merged = next(m for m in engine.list_memories(ADA) if "tea" in m.content)
     assert merged.id not in (a.memory_id, b.memory_id) and merged.importance == 0.7
     for old in (a.memory_id, b.memory_id):
@@ -134,7 +130,7 @@ def test_the_model_can_say_they_are_different_facts(store: Store, clock: Clock) 
     engine.remember(Fact("lives in Auckland"), ADA)
     engine.remember(Fact("lives in Wellington"), ADA)
     assert engine.maintain().merged == 0 and len(llm.calls) == 1
-    assert _current(engine) == ["lives in Auckland", "lives in Wellington"]
+    assert current(engine) == ["lives in Auckland", "lives in Wellington"]
 
 
 def test_only_one_scopes_semantic_memories_merge(store: Store, clock: Clock) -> None:
@@ -154,7 +150,7 @@ def test_a_merged_fact_is_screened_like_any_derived_fact(store: Store, clock: Cl
     engine.remember(Fact("likes green tea"), ADA)
     engine.remember(Fact("likes green tea a lot"), ADA)
     assert engine.maintain().merged == 0  # the merged wording would hold a secret: not written
-    assert _current(engine) == ["likes green tea", "likes green tea a lot"]
+    assert current(engine) == ["likes green tea", "likes green tea a lot"]
 
 
 def test_old_episodes_are_summarised_when_enabled(store: Store, clock: Clock) -> None:
@@ -220,7 +216,7 @@ def test_a_group_that_changed_during_the_model_call_is_skipped(store: Store, clo
     engine.remember(Fact("likes green tea"), ADA)
     engine.remember(Fact("likes green tea every morning"), ADA)
     assert engine.maintain().merged == 0
-    assert _current(engine) == ["likes green tea every morning"]  # untouched, not merged
+    assert current(engine) == ["likes green tea every morning"]  # untouched, not merged
 
 
 def test_two_runs_at_once_merge_a_group_once(store: Store, clock: Clock) -> None:
@@ -238,7 +234,7 @@ def test_two_runs_at_once_merge_a_group_once(store: Store, clock: Clock) -> None
     engine.remember(Fact("likes green tea every morning"), ADA)
     outer = engine.maintain()
     assert (holder["inner"].merged, outer.merged) == (2, 0)
-    assert _current(engine) == ["likes green tea every morning"]  # one merged memory, not two
+    assert current(engine) == ["likes green tea every morning"]  # one merged memory, not two
 
 
 def test_a_merge_never_crosses_scopes(store: Store, clock: Clock) -> None:
@@ -248,7 +244,7 @@ def test_a_merge_never_crosses_scopes(store: Store, clock: Clock) -> None:
     fact = Fact("likes green tea")
     steps = engine._merging(ADA, fact, [engine.get(bobs.memory_id)], "r", None)
     assert engine._commit_merges(ADA, steps) == []
-    assert engine.get(bobs.memory_id).current and _current(engine) == []
+    assert engine.get(bobs.memory_id).current and current(engine) == []
 
 
 def test_types_merge_only_with_their_own_kind(store: Store, clock: Clock) -> None:

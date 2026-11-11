@@ -4,15 +4,18 @@ types, metadata and as_of filters — with search entries committed with the row
 from datetime import timedelta
 from typing import Any
 
+import psycopg
 import pytest
+from psycopg import sql
 
 from lite_mem.engine import MemoryEngine
 from lite_mem.errors import ModelError
 from lite_mem.keyword import idf, term_counts, term_score, terms
 from lite_mem.stores.base import Filters, Store
+from lite_mem.stores.pg import PgStore
 from lite_mem.testing import FakeEmbedder
 from lite_mem.types import Fact, Scope
-from tests.conftest import Clock, count_rows, tx_class
+from tests.conftest import TEST_SCHEMA, Clock, count_rows, tx_class
 
 ADA = Scope(user_id="ada")
 BOB = Scope(user_id="bob")
@@ -224,3 +227,39 @@ def test_vector_search_reports_cosine_similarity(engine: MemoryEngine, store: St
     with store.transaction() as tx:
         [(_, same), (_, other)] = tx.vector_search("app", vector, Filters(ADA), 10)
     assert same == pytest.approx(1.0) and 0 <= other < same
+
+
+def test_vector_tables_carry_no_unused_ann_index(
+    pg_store: PgStore, migrated: psycopg.Connection, clock: Clock
+) -> None:
+    """S8: since S3 every vector search ranks exactly among the scope's rows, so an HNSW index
+    was only a cost on each write. Binding creates none; migration 0004 drops old ones."""
+    from lite_mem.db import migrate
+
+    MemoryEngine(pg_store, "app", FakeEmbedder(), clock=clock)  # binds: the 64-d table
+    schema = sql.Identifier(TEST_SCHEMA)
+
+    def ann_indexes() -> list[str]:
+        rows = migrated.execute(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = %s AND indexdef ILIKE %s",
+            (TEST_SCHEMA, "%using hnsw%"),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    assert ann_indexes() == []
+    migrated.execute(  # as S3 to S7 built it
+        sql.SQL("CREATE INDEX memory_vectors_64_hnsw ON {}.memory_vectors_64 "
+                "USING hnsw (embedding vector_cosine_ops)").format(schema)
+    )  # fmt: skip
+    migrated.execute(
+        sql.SQL("DELETE FROM {}.schema_migrations WHERE version LIKE '0004%%'").format(schema)
+    )
+    migrate(migrated, TEST_SCHEMA)
+    assert ann_indexes() == []
+
+
+def test_wide_embeddings_fit_without_an_ann_index(pg_store: PgStore, clock: Clock) -> None:
+    """HNSW capped vectors at 2000 dimensions; without it the `vector` type's 16 000 apply."""
+    engine = MemoryEngine(pg_store, "wide", FakeEmbedder(dim=3072), clock=clock)
+    engine.remember(Fact("Lives in Berlin"), ADA)
+    assert [h.memory.content for h in engine.search("Berlin", ADA)] == ["Lives in Berlin"]

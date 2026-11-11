@@ -39,6 +39,10 @@ from lite_mem.types import (
 
 MAX_FACT_CHARS = 2000
 MAX_TOP_K = 100
+# Bounds every interface shares (library, CLI, HTTP): a write's size, a list's length.
+MAX_MESSAGES = 200
+MAX_MESSAGE_CHARS = 20_000
+MAX_LIST = 10_000
 
 Clock = Callable[[], datetime]
 _EVENTS = TypeAdapter(list[MemoryEvent])  # idempotency results, stored as JSON
@@ -195,10 +199,15 @@ class MemoryEngine:
         is compared with its related memories in exactly this scope and resolved (ADD, UPDATE as
         SUPERSEDE, DELETE, NOOP), and the whole batch is written in one transaction. Model calls
         run outside any transaction; a retry with the same key replays without calling them."""
+        if len(messages) > MAX_MESSAGES:
+            raise InvalidRequest(f"at most {MAX_MESSAGES} messages per write")
+        if any(len(m.content) > MAX_MESSAGE_CHARS for m in messages):
+            raise InvalidRequest(f"a message is at most {MAX_MESSAGE_CHARS} characters")
+        metadata = self._stated_metadata(metadata or {})
         if infer:
             return self._infer(messages, scope, metadata, idempotency_key)
         facts = [
-            Fact(m.content, metadata=dict(metadata or {}))
+            Fact(m.content, metadata=dict(metadata))
             for m in messages
             if m.role == "user" and m.content.strip()
         ]
@@ -208,7 +217,11 @@ class MemoryEngine:
         self, fact: Fact, scope: Scope, *, idempotency_key: str | None = None
     ) -> list[MemoryEvent]:
         """Store one fact as given (a profile fact supersedes the key's current value)."""
-        fact = dataclasses.replace(fact, content=self._stated(fact.content))
+        fact = dataclasses.replace(
+            fact,
+            content=self._stated(fact.content),
+            metadata=self._stated_metadata(fact.metadata),
+        )
         return self._write(scope, [Add(fact)], idempotency_key)
 
     def update(
@@ -251,7 +264,7 @@ class MemoryEngine:
         events: list[MemoryEvent] = []
         with self._store.transaction() as tx:
             for memory in tx.expired(self._ns, now, user_id):
-                events += self._closing(tx, Expire(memory.id), "its expires_at passed", now)
+                events += self._closing(tx, Expire(memory.id), "its expires_at passed")
             expired = len(events)
             scopes = tx.scopes(self._ns, user_id)
         merged, summarised, forgotten = [], [], []
@@ -360,14 +373,14 @@ class MemoryEngine:
             why = f"weight below {cfg.forget_below}, idle {cfg.forget_idle_days} days"
             for memory in tx.idle(self._ns, exact, before):
                 if self._weight(memory, now) < cfg.forget_below:
-                    events += self._closing(tx, Expire(memory.id, at=now), why, now)
+                    events += self._closing(tx, Expire(memory.id, at=now), why)
         return events
 
-    def _closing(self, tx: Tx, op: Expire, why: str, now: datetime) -> list[MemoryEvent]:
-        """Expire a memory found by a read, if it still holds under its lock (a concurrent write
+    def _closing(self, tx: Tx, op: Expire, why: str) -> list[MemoryEvent]:
+        """Expire a memory found by a read, if it is still open under its lock (a concurrent write
         may have closed it meanwhile: then nothing is done)."""
         memory = tx.get_memory(self._ns, op.memory_id, lock=True)
-        if memory is None or memory.valid_to is not None:
+        if memory is None or not memory.current:
             return []
         return self._apply(tx, memory.scope, op, None, why)
 
@@ -388,11 +401,18 @@ class MemoryEngine:
         include_shared: bool = False,
         as_of: datetime | None = None,
         types: Sequence[MemoryType] | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[Memory]:
-        """The scope's current memories, or those in effect at `as_of`."""
+        """The scope's current memories, or those in effect at `as_of`, oldest first; a page of
+        them with `limit` (at most MAX_LIST) and `offset`."""
+        if limit is not None and not 1 <= limit <= MAX_LIST:
+            raise InvalidRequest(f"limit must be between 1 and {MAX_LIST}")
+        if offset < 0:
+            raise InvalidRequest("offset must not be negative")
         filters = _filters(scope, include_shared, as_of, types, None, self._now())
         with self._store.transaction() as tx:
-            return tx.list_memories(self._ns, filters)
+            return tx.list_memories(self._ns, filters, limit=limit, offset=offset)
 
     def search(
         self,
@@ -464,21 +484,14 @@ class MemoryEngine:
     # internals
 
     def _write(
-        self,
-        scope: Scope,
-        ops: Sequence[Op],
-        idempotency_key: str | None,
-        *,
-        produced_by: str | None = None,
-        reason: str | None = None,
+        self, scope: Scope, adds: Sequence[Add], idempotency_key: str | None
     ) -> list[MemoryEvent]:
-        """Apply `ops` for `scope` in one transaction; a key already used replays its result."""
+        """Write a caller's facts in one transaction; a key already used replays its result."""
         _check_scope(scope)
         now = self._now()
-        checked = [dataclasses.replace(op, fact=_checked(op.fact, scope)) if isinstance(op, Add)
-                   else op for op in ops]  # fmt: skip
+        checked = [dataclasses.replace(op, fact=_checked(op.fact, scope)) for op in adds]
         for op in checked:
-            if isinstance(op, Add) and op.fact.expires_at is not None and op.fact.expires_at <= now:
+            if op.fact.expires_at is not None and op.fact.expires_at <= now:
                 raise InvalidRequest("expires_at is already past: such a memory would never hold")
         if idempotency_key is not None:
             replay = self.replay(idempotency_key, scope)
@@ -488,7 +501,7 @@ class MemoryEngine:
         return self._commit(
             scope,
             idempotency_key,
-            lambda tx: [e for op in ready for e in self._apply(tx, scope, op, produced_by, reason)],
+            lambda tx: [e for op in ready for e in self._apply(tx, scope, op, None, None)],
         )
 
     def _commit(
@@ -553,7 +566,7 @@ class MemoryEngine:
         adds: list[Add],
         stored: list[list[Memory]],
         extracted_by: str | None,
-    ) -> list["_Step"]:
+    ) -> list[_Step]:
         """Resolve the facts one by one (model calls, no transaction). A fact's candidates are its
         related memories plus the facts this batch has already accepted (batch-local ids), so two
         wordings of one change do not both land. The model proposes; this decides (rule 5): a
@@ -600,7 +613,7 @@ class MemoryEngine:
                 steps += self._kept(old, decision.remainder, scope, decision.produced_by)
         return steps
 
-    def _kept(self, old: Memory, remainder: str, scope: Scope, by: str | None) -> list["_Step"]:
+    def _kept(self, old: Memory, remainder: str, scope: Scope, by: str | None) -> list[_Step]:
         """What still holds of a compound memory the batch replaces or retires: its own memory,
         screened like any derived fact (it needs a vector: see `_infer`)."""
         why = f"kept from {old.id}, which changed"
@@ -629,6 +642,24 @@ class MemoryEngine:
     def _secrets(self, text: str) -> list[Finding]:
         return [] if self._sensitive == "keep" else find(text)
 
+    def _stated_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        """A caller's metadata, screened like content: every text value in it, at any depth."""
+
+        def screen(value: Any) -> Any:
+            if isinstance(value, str):
+                found = self._secrets(value)
+                if found and self._sensitive == "drop":
+                    kinds = ", ".join(sorted({f.kind for f in found}))
+                    raise InvalidRequest(f"not stored: metadata holds a secret ({kinds})")
+                return mask(value) if found else value
+            if isinstance(value, dict):
+                return {k: screen(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [screen(v) for v in value]
+            return value
+
+        return {k: screen(v) for k, v in metadata.items()}
+
     def _stated(self, content: str) -> str:
         """A fact a caller states explicitly: masked, or refused so the caller knows."""
         found = self._secrets(content)
@@ -639,7 +670,7 @@ class MemoryEngine:
         kinds = ", ".join(sorted({f.kind for f in found}))
         raise InvalidRequest(f"not stored: it holds a secret ({kinds}); sensitive policy is drop")
 
-    def _carry_out(self, tx: Tx, scope: Scope, steps: list["_Step"]) -> list[MemoryEvent]:
+    def _carry_out(self, tx: Tx, scope: Scope, steps: list[_Step]) -> list[MemoryEvent]:
         """Apply a plan in the write transaction. A stored target that changed since it was looked
         up is not applied: the fact is added instead, and says so."""
         events: list[MemoryEvent] = []
@@ -740,7 +771,7 @@ class MemoryEngine:
         self,
         tx: Tx,
         memory: Memory,
-        op: Any,
+        op: EventOp,
         before: dict[str, Any] | None,
         after: dict[str, Any] | None,
         reason: str | None,

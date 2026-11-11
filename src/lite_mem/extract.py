@@ -13,8 +13,7 @@ from lite_mem.llm import LLM
 from lite_mem.types import Fact, Message
 
 MAX_FACTS = 20  # per conversation: more is the model listing the chat, not memory
-MAX_FACT_CHARS = 1000
-PROMPT = "extract_facts.j2"
+MAX_EXTRACTED_CHARS = 1000  # tighter than the engine's gate for a caller's fact (2000)
 _CJK = re.compile(r"[\u3400-\u9fff]")
 
 ExtractedType = Literal["semantic", "episodic", "procedural"]
@@ -47,7 +46,7 @@ class Extractor(Protocol):
 
 
 class LlmExtractor:
-    def __init__(self, llm: LLM, prompt: str = PROMPT) -> None:
+    def __init__(self, llm: LLM, prompt: str = prompts.EXTRACT) -> None:
         self._llm = llm
         self._prompt = prompts.load(prompt)
 
@@ -65,25 +64,12 @@ class LlmExtractor:
         return Extraction(normalise(answer.facts), provenance.tag)
 
 
-class RuleExtractor:
-    """No model: each user message is one semantic fact, as said (tests, and runs without an
-    LLM)."""
-
-    def extract(self, messages: list[Message]) -> Extraction:
-        drafts = [
-            ExtractedFact(content=m.content, type="semantic", importance=0.5)
-            for m in messages
-            if m.role == "user"
-        ]
-        return Extraction(normalise(drafts), None)
-
-
 def normalise(drafts: list[ExtractedFact]) -> list[Fact]:
     """The facts worth writing: trimmed and clipped, scores clamped to 0..1, blanks and repeats
     dropped (first kept), at most MAX_FACTS, in the model's order."""
     facts: dict[str, Fact] = {}
     for d in drafts:
-        content = d.content.strip()[:MAX_FACT_CHARS].strip()
+        content = d.content.strip()[:MAX_EXTRACTED_CHARS].strip()
         if not content or content in facts:
             continue
         importance = min(max(d.importance, 0.0), 1.0)

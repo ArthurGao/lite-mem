@@ -66,6 +66,13 @@ class Conflict(LiteMemError):
     expose = True
 
 
+class Refused(LiteMemError):
+    """Allowed in principle, refused by a limit (e.g. how many namespaces one service opens)."""
+
+    status = 403
+    expose = True
+
+
 class ConfigError(LiteMemError):
     """The service's own configuration is wrong or incomplete: the operator's problem, logged."""
 

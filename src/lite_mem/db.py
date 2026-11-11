@@ -14,7 +14,7 @@ from lite_mem.config import own_schema
 from lite_mem.errors import StoreError
 
 MIGRATIONS = "lite_mem.migrations"
-MIN_PGVECTOR = (0, 8)  # hnsw.iterative_scan, which filtered vector search relies on
+MIN_PGVECTOR = (0, 8)  # the oldest version tested (the `vector` type and `<=>`; no ANN index)
 
 
 def require_url(database_url: str | None) -> str:

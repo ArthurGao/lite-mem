@@ -1,13 +1,15 @@
 """Assembling an engine from Settings (design §9): the store, the embedder, and the LLM-backed
 extractor and resolver. The library can also build a MemoryEngine by hand."""
 
+import threading
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 from lite_mem.config import MaintainConfig, SearchConfig, Settings
 from lite_mem.consolidate import Consolidator, LlmConsolidator
 from lite_mem.embedding import Embedder, build_embedder
 from lite_mem.engine import MemoryEngine, health
-from lite_mem.errors import ConfigError
+from lite_mem.errors import ConfigError, Refused
 from lite_mem.extract import Extractor, LlmExtractor
 from lite_mem.llm import RoutedLLM
 from lite_mem.resolve import AddOnlyResolver, LlmResolver, Resolver
@@ -60,6 +62,38 @@ class Components:
 
     def health(self, *, deep: bool) -> dict[str, str]:
         return health(self.store, self.embedder, deep=deep)
+
+
+class Engines:
+    """One engine per namespace on shared components, made on first use (S9's in-process
+    provider and the HTTP service both keep one). Building one binds the namespace (a DB
+    transaction, maybe a model probe), so it holds only that namespace's lock: other namespaces
+    are served meanwhile, and a built engine is read without locking. `max_namespaces` bounds how
+    many one process opens (a broad key glob could otherwise bind names without end)."""
+
+    def __init__(self, components: Components, *, max_namespaces: int | None = None) -> None:
+        self.components = components
+        self._max = max_namespaces
+        self._built: dict[str, MemoryEngine] = {}
+        self._locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+        self._guard = threading.Lock()  # for _locks and the count
+
+    def __call__(self, namespace: str) -> MemoryEngine:
+        found = self._built.get(namespace)
+        if found is not None:
+            return found
+        with self._guard:
+            if (
+                self._max is not None
+                and len(self._locks) >= self._max
+                and namespace not in self._locks
+            ):
+                raise Refused(f"this service opens at most {self._max} namespaces")
+            lock = self._locks[namespace]
+        with lock:
+            if namespace not in self._built:
+                self._built[namespace] = self.components.engine(namespace)
+            return self._built[namespace]
 
 
 def open_components(

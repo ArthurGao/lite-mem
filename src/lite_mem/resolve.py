@@ -14,7 +14,6 @@ from lite_mem.llm import LLM
 from lite_mem.types import Memory
 
 Action = Literal["ADD", "UPDATE", "DELETE", "NOOP"]
-PROMPT = "resolve_conflict.j2"
 
 
 class Decision(BaseModel):
@@ -45,7 +44,7 @@ class Resolver(Protocol):
 
 
 class LlmResolver:
-    def __init__(self, llm: LLM, prompt: str = PROMPT) -> None:
+    def __init__(self, llm: LLM, prompt: str = prompts.RESOLVE) -> None:
         self._llm = llm
         self._prompt = prompts.load(prompt)
 

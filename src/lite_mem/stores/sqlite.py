@@ -112,10 +112,9 @@ CREATE TABLE IF NOT EXISTS memory_vectors (
 );
 """
 
-_COLUMNS = MEMORY_COLUMNS
 _INSERT = (
-    f"INSERT INTO memories (namespace, {_COLUMNS}) "
-    f"VALUES ({', '.join(['?'] * (1 + len(_COLUMNS.split(','))))})"
+    f"INSERT INTO memories (namespace, {MEMORY_COLUMNS}) "
+    f"VALUES ({', '.join(['?'] * (1 + len(MEMORY_COLUMNS.split(','))))})"
 )
 
 
@@ -314,7 +313,7 @@ class SqliteTx:
         self, namespace: str, memory_id: uuid.UUID, *, lock: bool = False
     ) -> Memory | None:
         row = self._one(
-            f"SELECT {_COLUMNS} FROM memories WHERE namespace = ? AND id = ?",
+            f"SELECT {MEMORY_COLUMNS} FROM memories WHERE namespace = ? AND id = ?",
             (namespace, str(memory_id)),
         )
         return _memory(row) if row else None
@@ -323,7 +322,7 @@ class SqliteTx:
         self, namespace: str, scope: Scope, key: str, *, lock: bool = False
     ) -> Memory | None:
         row = self._one(
-            f"SELECT {_COLUMNS} FROM memories WHERE namespace = ? "
+            f"SELECT {MEMORY_COLUMNS} FROM memories WHERE namespace = ? "
             "AND coalesce(user_id, '') = ? AND coalesce(agent_id, '') = ? AND key = ? "
             "AND valid_to IS NULL",
             (namespace, scope.user_id or "", scope.agent_id or "", key),
@@ -371,11 +370,14 @@ class SqliteTx:
             ),
         )  # fmt: skip
 
-    def list_memories(self, namespace: str, filters: Filters) -> list[Memory]:
+    def list_memories(
+        self, namespace: str, filters: Filters, *, limit: int | None = None, offset: int = 0
+    ) -> list[Memory]:
         where, params = _where(filters)
         rows = self._rows(
-            f"SELECT {_COLUMNS} FROM memories m WHERE {where} ORDER BY valid_from, id",
-            {**params, "ns": namespace},
+            f"SELECT {MEMORY_COLUMNS} FROM memories m WHERE {where} ORDER BY valid_from, id "
+            "LIMIT :limit OFFSET :offset",  # -1: no limit
+            {**params, "ns": namespace, "limit": -1 if limit is None else limit, "offset": offset},
         )
         return [_memory(r) for r in rows]
 
@@ -384,7 +386,7 @@ class SqliteTx:
             return []
         marks = ", ".join("?" * len(ids))
         rows = self._rows(
-            f"SELECT {_COLUMNS} FROM memories WHERE namespace = ? AND id IN ({marks})",
+            f"SELECT {MEMORY_COLUMNS} FROM memories WHERE namespace = ? AND id IN ({marks})",
             (namespace, *(str(i) for i in ids)),
         )
         return [_memory(r) for r in rows]
@@ -468,7 +470,7 @@ class SqliteTx:
 
     def expired(self, namespace: str, now: datetime, user_id: str | None) -> list[Memory]:
         rows = self._rows(
-            f"SELECT {_COLUMNS} FROM memories WHERE namespace = ? AND valid_to IS NULL "
+            f"SELECT {MEMORY_COLUMNS} FROM memories WHERE namespace = ? AND valid_to IS NULL "
             "AND expires_at <= ? AND (? IS NULL OR user_id = ?) ORDER BY expires_at, id",
             (namespace, _t(now), user_id, user_id),
         )
@@ -497,7 +499,7 @@ class SqliteTx:
     def idle(self, namespace: str, filters: Filters, before: datetime) -> list[Memory]:
         where, params = _where(filters)
         rows = self._rows(
-            f"SELECT {_COLUMNS} FROM memories m WHERE {where} "
+            f"SELECT {MEMORY_COLUMNS} FROM memories m WHERE {where} "
             "AND coalesce(m.last_accessed_at, m.valid_from) < :before ORDER BY valid_from, id",
             {**params, "ns": namespace, "before": _t(before)},
         )
@@ -525,7 +527,7 @@ class SqliteTx:
                 after=_loads(r["after"]),
                 reason=r["reason"],
                 produced_by=r["produced_by"],
-                at=datetime.fromisoformat(r["at"]),
+                at=datetime.fromisoformat(r["at"]),  # NOT NULL
             )
             for r in rows
         ]

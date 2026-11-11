@@ -67,7 +67,7 @@ class Memory:
 
     def holds_at(self, now: datetime) -> bool:
         """In effect at `now`: open and not past its expiry. The one rule every check uses (reads
-        apply the same rule in SQL, stores/pg.py `_where`)."""
+        apply the same rule in SQL: each store's `_where`)."""
         return self.valid_to is None and (self.expires_at is None or self.expires_at > now)
 
 

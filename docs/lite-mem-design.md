@@ -49,7 +49,8 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
            → 对每条事实：混合检索同一 scope 的相关记忆 top-n
            → Resolver（LLM，resolve_conflict.j2）→ ADD / UPDATE / DELETE / NOOP（代码校验目标 id）
            → Store（一个事务：记忆行 + 向量 + 倒排 + 历史事件）→ MemoryEvent[]
-写入（infer=false）：  事实原样 → （可选：去重）→ Store
+写入（infer=false）：  每条 user 消息原样（过敏感信息筛查）→ Store；不去重（要去重靠 infer=true 或 maintain 的合并）
+写入（remember）：    调用方给的一条事实（类型、key、重要性、过期时间）→ Store
 检索：  query → Embedder → 向量 top-n ┐
         query → 分词(jieba) → BM25 top-n ┴→ RRF → 权重（重要性 × 时间衰减 × 置信度）→ top-k MemoryHit
 维护（定时）：整合（相近记忆合并、旧的 episodic 归纳成 semantic）· 遗忘（过期、衰减到阈值以下）
@@ -61,11 +62,12 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 
 | 接口 | 方法 | 默认实现 | 其他实现 |
 | --- | --- | --- | --- |
-| `Extractor` | `extract(messages, scope) -> list[FactDraft]` | `LlmExtractor`（`extract_facts.j2`，结构化输出） | `RuleExtractor`（测试与无模型时：每条 user 消息一条事实） |
-| `Resolver` | `resolve(new, related) -> Resolution` | `LlmResolver`（`resolve_conflict.j2`） | `NoopResolver`（只新增，用来和 mem0 2.2.1 的行为对照） |
-| `Embedder` | `embed(texts) -> vectors`，`dim`，`model` | Ollama `bge-m3` | fastembed（本地 MiniLM）、OpenAI 兼容 |
+| `Extractor` | `extract(messages) -> Extraction`（事实 + 出处） | `LlmExtractor`（`extract_facts.j2`，结构化输出） | `testing.RuleExtractor`（测试：每条 user 消息一条事实） |
+| `Resolver` | `resolve(new, related) -> Resolution`（含 `remainder`） | `LlmResolver`（`resolve_conflict.j2`） | `AddOnlyResolver`（只新增，用来和 mem0 2.2.1 的行为对照） |
+| `Consolidator` | `merge(memories) -> MergeDecision`，`summarise(episodes) -> Summary[]` | `LlmConsolidator`（`consolidate_merge.j2`、`consolidate_summarise.j2`） | — |
+| `Embedder` | `embed(texts) -> vectors`，`dim`，`model` | Ollama `bge-m3` | OpenAI 兼容 |
 | `Store` | 见 §4 | `PgStore` | `SqliteStore`（sqlite-vec + 自己的倒排，S7b，嵌入式） |
-| `LLM` | `structured(role, system, user, schema)` | OpenAI 兼容（含 Ollama `/v1`） | Anthropic（extra） |
+| `LLM` | `structured(role, system, payload, schema) -> (结果, 出处)` | OpenAI 兼容（含 Ollama `/v1`） | Anthropic（extra） |
 
 - **角色（role）**：`extract`、`resolve`、`consolidate`。配置把角色映射到 provider 和模型；任何一次 LLM 调用都只说角色，不写模型名。
 - **出处**：每条由模型产生的记忆或变更，都带 `provider:model`（写进历史事件）。
@@ -107,11 +109,12 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 - 自己的 schema `lite_mem`（和 lite-rag 的 `lite_rag`、llm-steward 的 `steward` 可以共用一个 PG 实例，各用各的 schema）。
 - 表：
   - `memories`；
-  - `memory_vectors_<dim>`：一种维度一张表，HNSW cosine 索引；
+  - `memory_vectors_<dim>`：一种维度一张表（没有 ANN 索引：检索在 scope 内精确算，见 §5；S8 起不再建 HNSW，迁移 0004 删掉旧的）；
   - `memory_postings`：自写 BM25 的倒排，jieba 分词；
   - `memory_events`；
   - `namespaces`：记录 embedding 模型、维度和分词器，打开时不一致就拒绝；
-  - `api_keys`：服务端用。
+  - `idempotency`：幂等键和它第一次写入的结果。
+  - HTTP 服务的 API key 不在库里：在配置里（`LITEMEM_SERVER__API_KEYS`，只存 sha256，见 §7）。
 - **一次写入一个事务**：记忆行、向量、倒排、历史事件同时成功或同时回滚。这是 mem0 2.2.1 没有的保证（它的历史在单独的 SQLite 文件里）。
 - 迁移用自己的 `litemem migrate`，和 lite-rag 的做法一致。
 
@@ -122,7 +125,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 - 向量：sqlite-vec 的 `vec_distance_cosine`，在过滤后的行里精确排序（和 PG 一样：先过滤再算距离；`vec0` 虚拟表先取最近的 k 条再过滤，会漏掉本 scope 的记忆，llm-steward 的 native store 就是这样）。
 - 关键词：不用 FTS5——它的 bm25 是另一套公式，两个 store 的排序会不同。用和 PG 一样的倒排表，分数用 `keyword.py` 的函数算，两个 store 排序相同。
 - 事务：每个线程一个连接，WAL，所有事务都 `BEGIN IMMEDIATE`，写者由数据库串行；PG 的行锁和 advisory lock 在这里不需要。读也要等写者（`busy_timeout` 默认 10 秒）：单机够用，并发写多就用 PG。
-- 时间存成固定宽度的 UTC ISO 文本（文本序就是时间序）；metadata 过滤按键做标量相等（`json_extract`）。
+- 时间存成固定宽度的 UTC ISO 文本（文本序就是时间序）；不带时区的时间在引擎入口就被拒绝。metadata 过滤和 PG 一样是 jsonb 包含（`@>` 的规则：嵌套对象只要包含、数组只要有、`true` 不等于 `1`），用一个注册进 SQLite 的函数实现。
 
 ### Namespace（强制）
 
@@ -133,7 +136,9 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 
 - **只失效、不删除**：取代、删除、合并、过期都只写 `valid_to` 和历史，`as_of` 能回看。
 - **更正对 `as_of` 追溯生效**：`CORRECT` 改的是同一事实的措辞，`as_of` 看到的是更正后的文字；改前的文字在历史里。事实本身变了要用取代，不要用更正。
-- **索引绑定模型**：换 embedding 模型要新建 namespace 并重建（`litemem reindex`），不能就地替换。
+- **索引绑定模型**：换 embedding 模型要新建 namespace，把记忆重新写进去（没有 `litemem reindex` 命令：v1 的做法是新 namespace 加重写），不能就地替换。
+- **上限**（库、CLI、HTTP 一致，S8）：一次写入最多 200 条消息、每条最多 2 万字；`list_memories` 可分页（`limit` 最多 1 万，HTTP 默认 1000）；`top_k` 最多 100；一个服务进程最多打开 `LITEMEM_SERVER__MAX_NAMESPACES`（默认 1000）个 namespace。
+- **敏感信息**：内容、metadata 里的文字值、事件的理由都过同一套筛查（`lite_mem.sensitive`）。
 - **幂等**：调用方可以带 `idempotency_key`（例如 episode id）。同一个 key 的写入只执行一次，重试会返回第一次的结果。mem0 2.2.1 没有这个保证，llm-steward 需要它。
 
 ## 5. 检索
@@ -142,10 +147,10 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
   - 重要性：`1 + boost × importance`；
   - 时间衰减：按类型的半衰期，episodic 默认 30 天，其余不衰减；
   - 置信度：低于 0.5 的乘以 0.8。
-- 过滤：scope（自己的，加上共享的）、类型、metadata 等值，`as_of`（某个时刻生效的版本）。
-- 结果 `MemoryHit(id, content, type, score, rel, scope, valid_from, valid_to)`。分数只在 lite-mem 内部可比。
+- 过滤：scope（自己的，加上共享的：user、agent、session 都为空的才是共享）、类型、metadata（jsonb 包含）、`as_of`（某个时刻生效的版本）。
+- 结果 `MemoryHit(memory, score, relevance)`：`memory` 是整条记忆；`relevance` 是融合后的相关度，`score` 再乘了权重。分数只在 lite-mem 内部可比。
 - 冲突消解用的"相关记忆"也走同一条检索，只是限定在**完全相同的 scope**内，并且只取当前生效的记忆。过滤条件有两种模式：`visible`（这个 scope 能看到的：自己的、没指定 session 时含它的所有 session、可选含共享）和 `exact`（恰好这个 scope，session 也要一致，不含共享）。
-- 向量检索在过滤后的行上精确计算距离（先物化该 scope 可见的行，再算余弦），返回 (id, 相似度)；按 scope 检索时一个 scope 只有千级记忆，精确算很便宜，也不会因为别的 scope 有更近的向量而漏召回。HNSW 索引留给以后不按 scope 的查询。
+- 向量检索在过滤后的行上精确计算距离（先物化该 scope 可见的行，再算余弦），返回 (id, 相似度)；按 scope 检索时一个 scope 只有千级记忆，精确算很便宜，也不会因为别的 scope 有更近的向量而漏召回。ANN 索引（HNSW）留给以后不按 scope 的查询，到时再建。
 - BM25 的契约：两个 store 都和 `keyword.py` 的公式逐项相等（PgStore 在 SQL 里算，SqliteStore 用 `keyword.py` 的函数在 Python 里算），同一套测试在两个 store 上都查。
 
 ## 6. 整合与遗忘（S7）
@@ -163,13 +168,15 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 - API key 鉴权，key 按 glob 限定 namespace。没有 key 时，服务只能绑定回环地址。
 - 错误用 Problem Details；写接口支持 `Idempotency-Key`。
 - 路由：
-  - `POST /v1/memories:add`（messages + scope + infer）；
+  - `POST /v1/memories:add`（messages + scope + infer，`Idempotency-Key`）；
+  - `POST /v1/memories`（`remember`：一条事实原样写入，`Idempotency-Key`；S8，给 S9 推送治理过的记忆用）；
   - `POST /v1/memories:search`；
   - `GET|PATCH|DELETE /v1/memories/{id}`；
   - `GET /v1/memories/{id}/history`；
-  - `GET /v1/memories?scope…`；
+  - `GET /v1/memories?scope…&limit&offset`（分页）；
+  - `POST /v1/maintain[?user_id]`（整合与遗忘，返回事件）；
   - `DELETE /v1/users/{user_id}`（彻底删除）；
-  - `GET /health`。
+  - `GET /health`（只查数据库）、`GET /health?deep=true`（再做一次 embedding）。
 - Dockerfile 和 compose 示例（服务 + PG，Ollama 在宿主机上）；CI 构建镜像（llm-steward 的教训：不在 CI 里构建，镜像坏了也没人发现）。
 
 ## 8. 评测
@@ -218,7 +225,10 @@ llm-steward 新增 `LiteMemProvider`，实现它的 `MemoryProvider` Protocol，
 - **能力**：`{extract, resolves_conflicts, update, delete, metadata_filter}`。
 - **llm-steward 那边要改的**：现在的 `ExtractionService` 只把引擎的 ADD 事件写进镜像（mem0 2.2.1 只会新增）。引擎自己会消解冲突时，要把以下事件映射成治理操作，让历史仍在 llm-steward 里：
   - SUPERSEDE（`replaced` 是被取代的记忆）映射成 `SupersedeMemory`；
-  - DELETE 映射成 `DeleteMemory`。
+  - DELETE 映射成 `DeleteMemory`；
+  - EXPIRE 也会出现在 `add` 的结果里：profile key 的旧值已经过期时，写新值会先把它记成 EXPIRE；
+  - 复合事实的 `remainder` 以 ADD 返回，理由是 "kept from <旧 id>"。
+- **推送治理过的记忆**用 `remember`（库，或 `POST /v1/memories`），幂等键用 llm-steward 的记忆 id：`add(infer=false)` 遇到敏感信息会静默丢掉、没有幂等键时重试会重复写。
 - **另一个选择**：llm-steward 用 lite-mem 时关掉引擎内的冲突消解，只用抽取，继续走 llm-steward 自己的冲突补偿。见 §13。
 - **离线变化（S7）**：合并和过期不是 llm-steward 的调用触发的。llm-steward 自己定时调用 `maintain`（库或 `POST /v1/maintain`），把返回的事件映射成治理操作：
   - MERGE（每个被合并的来源一条，`replaced` 是来源）映射成 `SupersedeMemory`（来源 → 新记忆）；
@@ -234,16 +244,18 @@ llm-steward 新增 `LiteMemProvider`，实现它的 `MemoryProvider` Protocol，
 
 ```
 lite-mem/
-  pyproject.toml              # uv；extras: [server] [fastembed] [anthropic] [sqlite]
+  pyproject.toml              # uv；extras: [server] [anthropic] [sqlite] [eval]
   Dockerfile  deploy/compose.yaml
   src/lite_mem/
-    config.py models.py engine.py            # MemoryEngine：库和服务的唯一核心
-    extract.py resolve.py consolidate.py     # 流水线各步（Protocol + LLM 实现 + 规则实现）
+    config.py types.py engine.py factory.py  # MemoryEngine：库和服务的唯一核心；factory 按配置组装
+    extract.py resolve.py consolidate.py     # 流水线各步（Protocol + LLM 实现）
     embedding.py keyword.py fusion.py llm.py # 与 lite-rag 同样的写法，各自独立，不互相依赖
-    stores/ base.py pg.py sqlite.py          # Store Protocol + 后端
-    migrations/                              # litemem migrate
+    sensitive.py errors.py ids.py db.py      # 敏感信息、错误与脱敏、UUIDv7、PG 迁移
+    stores/ base.py pg.py sqlite.py          # Store Protocol + 两个后端
+    migrations/                              # litemem migrate（PG）
     server/ app.py auth.py schemas.py        # FastAPI（extra [server]）
-    cli.py prompts/*.j2
+    eval.py eval_mem0.py                     # litemem eval（mem0 对照：extra [eval]）
+    cli.py testing.py prompts/*.j2           # testing：给测试和下游项目用的 fake
   tests/  unit/（fakes）  integration/（PG：独立的测试 schema lite_mem_test）  -m ollama 可选
   eval/   合成对话、标注、报告；mem0 对照脚本
   docs/lite-mem-design.md
@@ -329,6 +341,12 @@ lite-mem/
   - 自己发现的：SQLite 下测试偶发失败——`uuid7()` 在同一毫秒内的两个 id 顺序随机，而列表在时间相同时按 id 排序；PG 每次写入都有网络往返，很少落在同一毫秒，所以一直没暴露。`uuid7()` 改成单调（RFC 9562 §6.2 方法 3：毫秒 + 74 位计数器，同一毫秒或时钟回拨时加一），先有失败的测试；修完 SQLite 那一半连跑八次都绿。
   - /simplify 后：scope 隔离规则（`own_rows`）、namespace 绑定检查（`check_binding`）、列清单（`MEMORY_COLUMNS`）两个 store 共用；SQLite 带共享记忆时改成两次索引查找（`EXPLAIN QUERY PLAN` 证实原来的 `ns AND (own OR shared)` 会扫整个 namespace）；合并分组时每次相似查询一个短事务（SQLite 每个事务都持写锁，一整轮分组会让所有读写排队）；uuid7 简化成（毫秒，计数器）；测试的 helper 收拢、类型标注改成 `Store`；CLI 和 factory 共用 `is_sqlite`。没做：只读事务用 `BEGIN DEFERRED`（要改 Store 接口，合并分组改成短事务后收益很小）；`erase` 里清 `superseded_by` 的那句（公开 API 不会产生跨用户的链接，取代只在同一 scope 内，两个 store 都只是防御）。
   - Codex：P1 SQLite 的 metadata 过滤是逐键相等，PG 是 jsonb 包含（`@>`：嵌套对象只要包含、数组只要有、`true` 不等于 `1`）——SQLite 注册一个和 jsonb 包含规则相同的函数，同一个测试在两个 store 上查；P2 `close()` 会关掉别的线程正在用的连接——等进行中的事务结束再关，之后的事务报"已关闭"；P2 不带时区的时间在 SQLite 按本机时区、在 PG 按会话时区——引擎入口拒绝（`as_of`、`expires_at`）；P2 uuid7 在时间戳上限会回绕——报错（公元 10889 年）。都先有失败的测试（变异检查）。
+- **S8（2026-11-12）**：整个引擎的收尾审查（Codex 一份、/simplify 两份，都读整个仓库，找只有放在一起才看得出的问题）。
+  - Codex：High 共享记忆的条件只看 user 和 agent 为空，只属于某个 session 的记忆会被所有 session 看到——共享要求 session 也为空（两个 store 共用一条规则）；High metadata 不过敏感信息筛查，密码放在 metadata 里会被存下来——metadata 里每个文字值都过筛（`drop` 拒绝、`mask` 打码）；Medium glob key 可以无限新建 namespace——一个服务进程最多打开 `max_namespaces` 个（默认 1000），超了 403；Medium 列表没有上限——`list_memories` 分页（库和 HTTP 一样），HTTP 默认 1000；Medium 请求大小没有上限——一次写入最多 200 条消息、每条 2 万字，在引擎里检查（库、CLI、HTTP 一致），HTTP 的 schema 也写上；Medium/Low 文档和代码不一致——改文档。都先有失败的测试。不改：`POST /v1/maintain` 对整个 namespace 返回的事件不设上限——这是运维调用，S9 按用户调用（§13）。
+  - /simplify（altitude）：HNSW 索引自 S3 起没有查询用到、却是每次写入的成本——不再建，迁移 0004 删掉旧的，维度上限从 HNSW 的 2000 放到 `vector` 的 16000（先有失败的测试）；HTTP 缺 `remember`——加 `POST /v1/memories`，S9 推送治理过的记忆用它（带幂等键）；每个 namespace 一个引擎的缓存从 server 挪到 `factory.Engines`，S9 的进程内 provider 也用它；`/v1/maintain` 直接返回引擎的 `MaintenanceReport`（原来手抄了一个一样的 schema）。
+  - /simplify（reuse / simplification）：`_write` 只收 Add、去掉没用的参数；`_closing` 去掉没用的参数；提示词文件名只在 `prompts` 定义一次；两个 LLM 客户端共用一个基类（客户端缓存、user 消息），Anthropic 的出处也用配置里的 provider；`RuleExtractor` 只有测试在用，挪到 `testing.py`；抽取的长度上限改名 `MAX_EXTRACTED_CHARS`，和引擎的 `MAX_FACT_CHARS` 分开；`FakeLLM.roles` 没人用，删掉；几处过时的注释；测试里重复的 `_current`、`_memory` 收进共享 helper。没做：engine.py（约 850 行）不拆——只有几个纯校验函数是干净的接缝，维护和推断都依赖引擎的私有方法，拆开会把唯一的写入口 `_apply` 散到几个文件；`Components` 的默认值和 `MemoryEngine` 的重复（只有一个测试 helper 用到默认值）；`MemoryEngine.health` 保留（S9 的进程内 provider 要用）；两个 store 里方言不同的 SQL 不抽象（由同一套测试保证一致）；测试里各文件自己的 `ADA` 常量保留（一行，读起来更直接）。
+  - **留到 S8b**：BM25 按 scope 统计。现在每次检索、每条待消解的事实都要按整个 namespace 算一遍统计量和文档频率，开销随 namespace 增长，而不是随用户；S9 里一个 llm-steward namespace 就是一个 lite-mem namespace，里面有很多用户。改成先物化 scope 可见的行再算（和向量检索一样），排序会变，按规则要真实模型 eval 前后对比。
+  - **留到 S9**：事件契约（时间、scope、NOOP、出处拆分）、离线变化怎么到达 llm-steward、延迟和租约——都要和 llm-steward 那边一起改，见 §13。
 
 ## 13. 待确认
 
@@ -338,3 +356,9 @@ lite-mem/
 - **合并阈值、遗忘阈值的默认值**：合并 0.92（S7，证据薄，见 §12）；遗忘默认关闭，等有长期使用的数据再定。
 - **和 lite-rag 共用代码**（embedding、BM25、LLM 层）还是各自独立：v1 各自独立（两个仓库都在学习期，接口还在变）；稳定后再考虑抽出一个共享小包。
 - **License**：仓库建立时用 Apache-2.0（与 llm-steward 一致），owner 可以改。
+- **S9 开始前要定的（S8 审查汇总）**：
+  - 事件契约：`MemoryEvent` 加时间（EXPIRE 按到期时间失效需要它）和 scope（整个 namespace 的 `maintain` 返回的事件要能对回用户）；NOOP 是否放进写入结果（S4、S5 都推到了这里）；出处是否拆成"抽取者 / 决定者"。和 llm-steward 的 `MemoryEvent`（现在只有 ADD / UPDATE / DELETE、没有 `replaced`）一起改，只改一次。
+  - 离线变化怎么到达 llm-steward：它自己按用户调 `maintain`（推荐），还是加按游标拉事件的接口（`memory_events` 的 id 在并发写时提交顺序不保证，游标要留安全余量）。
+  - llm-steward 的 `MemoryProvider.add` 没有幂等键，`ExtractionService` 只镜像 ADD。
+  - 延迟和租约：一次 `add(infer=true)` 是一次抽取加每条事实一次消解，本地 qwen3 3–10 秒（不思考）到 90 秒（思考）；llm-steward 的任务租约 60 秒。要么一次调用消解整批（S4 起推迟的另一种 Resolver，要 eval 验证），要么给 lite-mem 的任务单独的租约。
+  - BM25 按 scope 统计（见 §12 S8）。

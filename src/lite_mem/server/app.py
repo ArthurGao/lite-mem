@@ -9,9 +9,7 @@ Errors are Problem Details (RFC 9457); an upstream failure's message is logged (
 returned."""
 
 import logging
-import threading
 import uuid
-from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -25,7 +23,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from lite_mem import __version__, factory
 from lite_mem.config import Settings
-from lite_mem.engine import MemoryEngine
+from lite_mem.engine import MAX_LIST, MaintenanceReport, MemoryEngine
 from lite_mem.errors import LiteMemError, redact
 from lite_mem.factory import Components
 from lite_mem.server import auth
@@ -35,8 +33,8 @@ from lite_mem.server.schemas import (
     EventsOut,
     HistoryOut,
     HitsOut,
-    MaintainOut,
     MemoriesOut,
+    RememberIn,
     SearchIn,
     UpdateIn,
 )
@@ -54,29 +52,6 @@ def problem(
     return JSONResponse(body, status_code=status, headers=headers, media_type=PROBLEM)
 
 
-class _Engines:
-    """One engine per namespace on shared components. Building one binds the namespace (a DB
-    transaction, maybe a model probe), so it holds only that namespace's lock: other namespaces
-    are served meanwhile, and a built engine is read without locking."""
-
-    def __init__(self, components: Components) -> None:
-        self._components = components
-        self._built: dict[str, MemoryEngine] = {}
-        self._locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
-        self._guard = threading.Lock()  # for _locks only
-
-    def __call__(self, namespace: str) -> MemoryEngine:
-        found = self._built.get(namespace)
-        if found is not None:
-            return found
-        with self._guard:
-            lock = self._locks[namespace]
-        with lock:
-            if namespace not in self._built:
-                self._built[namespace] = self._components.engine(namespace)
-            return self._built[namespace]
-
-
 def create_app(settings: Settings, components: Components | None = None) -> FastAPI:
     """The app. `components` are opened from `settings` at startup unless given (tests); given
     components are not closed by the app."""
@@ -88,14 +63,14 @@ def create_app(settings: Settings, components: Components | None = None) -> Fast
             yield
             return
         opened = factory.open_components(settings)
-        held["components"], held["engines"] = opened, _Engines(opened)
+        held["engines"] = factory.Engines(opened, max_namespaces=settings.server.max_namespaces)
         try:
             yield
         finally:
             opened.store.close()
 
     if components is not None:
-        held["components"], held["engines"] = components, _Engines(components)
+        held["engines"] = factory.Engines(components, max_namespaces=settings.server.max_namespaces)
     app = FastAPI(title="lite-mem", version=__version__, lifespan=lifespan)
     keys = settings.server.api_keys
 
@@ -120,7 +95,7 @@ def create_app(settings: Settings, components: Components | None = None) -> Fast
             raise HTTPException(400, "no namespace: send X-LiteMem-Namespace")
         if key is not None and not auth.allows(key, namespace):
             raise HTTPException(403, "this key does not reach that namespace")
-        engines: _Engines = held["engines"]
+        engines: factory.Engines = held["engines"]
         return engines(namespace)
 
     Engine = Annotated[MemoryEngine, Depends(engine)]
@@ -151,8 +126,8 @@ def create_app(settings: Settings, components: Components | None = None) -> Fast
     def health(deep: bool = False) -> JSONResponse:
         """The store (cheap: for frequent probes); `deep=true` also embeds once, so a down model
         shows (design §10: what llm-steward's provider health asks)."""
-        found: Components = held["components"]
-        parts = found.health(deep=deep)
+        engines: factory.Engines = held["engines"]
+        parts = engines.components.health(deep=deep)
         ok = all(v == "ok" for v in parts.values())
         return JSONResponse({"status": "ok" if ok else "error", **parts}, 200 if ok else 503)
 
@@ -185,10 +160,25 @@ def create_app(settings: Settings, components: Components | None = None) -> Fast
         include_shared: bool = False,
         as_of: datetime | None = None,
         types: Annotated[list[MemoryType] | None, Query()] = None,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIST)] = 1000,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> MemoriesOut:
+        """Oldest first, a page at a time (`limit`, `offset`)."""
         scope = Scope(user_id, agent_id, session_id)
-        found = engine.list_memories(scope, include_shared=include_shared, as_of=as_of, types=types)
+        found = engine.list_memories(scope, include_shared=include_shared, as_of=as_of,
+                                     types=types, limit=limit, offset=offset)  # fmt: skip
         return MemoriesOut(memories=found)
+
+    @app.post("/v1/memories", response_model=EventsOut)
+    def remember(
+        body: RememberIn,
+        engine: Engine,
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ) -> EventsOut:
+        """Store one fact as given (`remember`): a profile fact supersedes its key's value."""
+        events = engine.remember(body.to_fact(), body.scope.to_scope(),
+                                 idempotency_key=idempotency_key)  # fmt: skip
+        return EventsOut(events=events)
 
     @app.get("/v1/memories/{memory_id}", response_model=Memory)
     def get(memory_id: uuid.UUID, engine: Engine) -> Memory:
@@ -206,12 +196,10 @@ def create_app(settings: Settings, components: Components | None = None) -> Fast
     def history(memory_id: uuid.UUID, engine: Engine) -> HistoryOut:
         return HistoryOut(entries=engine.history(memory_id))
 
-    @app.post("/v1/maintain", response_model=MaintainOut)
-    def maintain(engine: Engine, user_id: str | None = None) -> MaintainOut:
+    @app.post("/v1/maintain", response_model=MaintenanceReport)
+    def maintain(engine: Engine, user_id: str | None = None) -> MaintenanceReport:
         """Consolidate and forget now (design §6), for one user or the namespace."""
-        r = engine.maintain(user_id)
-        return MaintainOut(expired=r.expired, merged=r.merged, summarised=r.summarised,
-                           forgotten=r.forgotten, events=list(r.events))  # fmt: skip
+        return engine.maintain(user_id)
 
     @app.delete("/v1/users/{user_id}", response_model=ErasedOut)
     def erase(user_id: str, engine: Engine) -> ErasedOut:

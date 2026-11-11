@@ -16,8 +16,9 @@ MEMORY_COLUMNS = (
     "id, user_id, agent_id, session_id, type, key, content, importance, confidence, valid_from, "
     "valid_to, superseded_by, expires_at, source, metadata, access_count, created_at, updated_at"
 )
-# Rows shared within a namespace (design §3): no user, no agent.
-SHARED = "m.user_id IS NULL AND m.agent_id IS NULL"
+# Rows shared within a namespace (design §3): no user, no agent, no session. A row with only a
+# session belongs to that session (Codex S8: it was shared with every session).
+SHARED = "m.user_id IS NULL AND m.agent_id IS NULL AND m.session_id IS NULL"
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,7 @@ class Filters:
     # clock) is only for callers of a store on its own.
     now: datetime | None = None
     types: tuple[MemoryType, ...] | None = None
-    metadata: dict[str, Any] | None = None  # equality on each key
+    metadata: dict[str, Any] | None = None  # jsonb containment (`@>`), in every store
 
 
 def own_rows(f: Filters, mark: Callable[[str], str]) -> str:
@@ -134,7 +135,11 @@ class Tx(Protocol):
         at: datetime,
     ) -> None: ...
 
-    def list_memories(self, namespace: str, filters: Filters) -> list[Memory]: ...
+    def list_memories(
+        self, namespace: str, filters: Filters, *, limit: int | None = None, offset: int = 0
+    ) -> list[Memory]:
+        """Oldest first (valid_from, then id); `limit` None: all of them."""
+        ...
 
     def get_memories(self, namespace: str, ids: list[uuid.UUID]) -> list[Memory]: ...
 
@@ -154,8 +159,8 @@ class Tx(Protocol):
     def text_search(
         self, namespace: str, query: str, filters: Filters, limit: int
     ) -> list[uuid.UUID]:
-        """Best first. PgStore: BM25 with the namespace's statistics, equal to keyword.py's formula
-        (a PG-only test checks it); any store: a ranked keyword match (design §5)."""
+        """Best first: BM25 with the namespace's statistics, equal to keyword.py's formula in
+        every store (the same test checks both; design §5)."""
         ...
 
     def expired(self, namespace: str, now: datetime, user_id: str | None) -> list[Memory]:

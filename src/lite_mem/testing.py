@@ -12,8 +12,9 @@ from typing import Any
 from pydantic import BaseModel
 
 from lite_mem.config import Role
+from lite_mem.extract import ExtractedFact, Extraction, normalise
 from lite_mem.llm import Provenance
-from lite_mem.types import Memory, MemoryType, Scope
+from lite_mem.types import Memory, MemoryType, Message, Scope
 
 # Latin words, digits, and each CJK character on its own.
 _TOKEN = re.compile(r"[a-z0-9]+|[㐀-鿿]")
@@ -73,9 +74,6 @@ class FakeLLM:
         answer = self._handlers[role](sent)
         return schema.model_validate(answer), Provenance(role, self.provider, self.model)
 
-    def roles(self) -> list[str]:
-        return [role for role, _ in self.calls]
-
 
 def memory(content: str, *, type: MemoryType = "semantic", scope: Scope | None = None) -> Memory:
     """A stored-looking memory for unit tests (no database)."""
@@ -86,6 +84,18 @@ def memory(content: str, *, type: MemoryType = "semantic", scope: Scope | None =
         superseded_by=None, expires_at=None, source=None, metadata={}, access_count=0,
         created_at=now, updated_at=now,
     )  # fmt: skip
+
+
+class RuleExtractor:
+    """No model: each user message is one semantic fact, as said."""
+
+    def extract(self, messages: list[Message]) -> Extraction:
+        drafts = [
+            ExtractedFact(content=m.content, type="semantic", importance=0.5)
+            for m in messages
+            if m.role == "user"
+        ]
+        return Extraction(normalise(drafts), None)
 
 
 def user_lines(payload: dict[str, Any]) -> dict[str, Any]:

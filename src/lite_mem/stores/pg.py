@@ -27,13 +27,12 @@ from lite_mem.stores.base import (
 )
 from lite_mem.types import EventOp, HistoryEntry, Memory, Scope
 
-MAX_DIM = 2000  # pgvector's HNSW limit for `vector`
+MAX_DIM = 16_000  # pgvector's limit for `vector` (no HNSW index since S8: its limit was 2000)
 
-_COLUMNS = MEMORY_COLUMNS
 
 _INSERT = (
-    f"INSERT INTO memories (namespace, {_COLUMNS}) "
-    f"VALUES ({', '.join(['%s'] * (1 + len(_COLUMNS.split(','))))})"
+    f"INSERT INTO memories (namespace, {MEMORY_COLUMNS}) "
+    f"VALUES ({', '.join(['%s'] * (1 + len(MEMORY_COLUMNS.split(','))))})"
 ).encode()
 
 
@@ -122,7 +121,7 @@ class PgTx:
         assert row is not None
         check_binding(namespace, row, provider=provider, model=model, dim=dim, tokenizer=tokenizer)
         if dim > MAX_DIM:
-            raise ConfigError(f"embedding dim {dim} is over pgvector's HNSW limit ({MAX_DIM})")
+            raise ConfigError(f"embedding dim {dim} is over pgvector's limit ({MAX_DIM})")
         self._dims[namespace] = dim
         table = _vectors(dim)
         exists = self._one("SELECT to_regclass(%s) AS t", (f"memory_vectors_{dim}",))
@@ -135,11 +134,6 @@ class PgTx:
                 "CREATE TABLE IF NOT EXISTS {} (memory_id uuid PRIMARY KEY REFERENCES memories (id)"
                 " ON DELETE CASCADE, namespace text NOT NULL, embedding vector({}) NOT NULL)"
             ).format(table, sql.Literal(dim))
-        )
-        self._conn.execute(
-            sql.SQL(
-                "CREATE INDEX IF NOT EXISTS {} ON {} USING hnsw (embedding vector_cosine_ops)"
-            ).format(sql.Identifier(f"memory_vectors_{dim}_hnsw"), table)
         )
 
     def lookup_idempotency(self, namespace: str, key: str) -> tuple[str | None, Any] | None:
@@ -196,7 +190,7 @@ class PgTx:
         self, namespace: str, memory_id: uuid.UUID, *, lock: bool = False
     ) -> Memory | None:
         row = self._one(
-            f"SELECT {_COLUMNS} FROM memories WHERE namespace = %s AND id = %s"
+            f"SELECT {MEMORY_COLUMNS} FROM memories WHERE namespace = %s AND id = %s"
             + (" FOR UPDATE" if lock else ""),
             (namespace, memory_id),
         )
@@ -206,7 +200,7 @@ class PgTx:
         self, namespace: str, scope: Scope, key: str, *, lock: bool = False
     ) -> Memory | None:
         row = self._one(  # the predicate matches memories_profile_current exactly
-            f"SELECT {_COLUMNS} FROM memories WHERE namespace = %s "
+            f"SELECT {MEMORY_COLUMNS} FROM memories WHERE namespace = %s "
             "AND coalesce(user_id, '') = %s AND coalesce(agent_id, '') = %s AND key = %s "
             "AND valid_to IS NULL" + (" FOR UPDATE" if lock else ""),
             (namespace, scope.user_id or "", scope.agent_id or "", key),
@@ -228,7 +222,7 @@ class PgTx:
 
     def expired(self, namespace: str, now: datetime, user_id: str | None) -> list[Memory]:
         rows = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM memories WHERE namespace = %s AND valid_to IS NULL "
+            f"SELECT {MEMORY_COLUMNS} FROM memories WHERE namespace = %s AND valid_to IS NULL "
             "AND expires_at <= %s AND (%s::text IS NULL OR user_id = %s) "
             "ORDER BY expires_at, id".encode(),
             (namespace, now, user_id, user_id),
@@ -257,7 +251,7 @@ class PgTx:
     def idle(self, namespace: str, filters: Filters, before: datetime) -> list[Memory]:
         where, params = _where(filters)
         rows = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM memories m WHERE {where} "
+            f"SELECT {MEMORY_COLUMNS} FROM memories m WHERE {where} "
             "AND coalesce(m.last_accessed_at, m.valid_from) < %(before)s "
             "ORDER BY valid_from, id".encode(),
             {**params, "ns": namespace, "before": before},
@@ -299,17 +293,20 @@ class PgTx:
             ),
         )
 
-    def list_memories(self, namespace: str, filters: Filters) -> list[Memory]:
+    def list_memories(
+        self, namespace: str, filters: Filters, *, limit: int | None = None, offset: int = 0
+    ) -> list[Memory]:
         where, params = _where(filters)
         rows = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM memories m WHERE {where} ORDER BY valid_from, id".encode(),
-            {**params, "ns": namespace},
+            f"SELECT {MEMORY_COLUMNS} FROM memories m WHERE {where} ORDER BY valid_from, id "
+            "LIMIT %(limit)s OFFSET %(offset)s".encode(),
+            {**params, "ns": namespace, "limit": limit, "offset": offset},
         ).fetchall()
         return [_memory(r) for r in rows]
 
     def get_memories(self, namespace: str, ids: list[uuid.UUID]) -> list[Memory]:
         rows = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM memories WHERE namespace = %s AND id = ANY(%s)".encode(),
+            f"SELECT {MEMORY_COLUMNS} FROM memories WHERE namespace = %s AND id = ANY(%s)".encode(),
             (namespace, ids),
         ).fetchall()
         return [_memory(r) for r in rows]

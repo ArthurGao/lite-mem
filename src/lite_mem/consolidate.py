@@ -59,8 +59,8 @@ class LlmConsolidator:
     def __init__(
         self,
         llm: LLM,
-        merge_prompt: str = "consolidate_merge.j2",
-        summarise_prompt: str = "consolidate_summarise.j2",
+        merge_prompt: str = prompts.MERGE,
+        summarise_prompt: str = prompts.SUMMARISE,
     ) -> None:
         self._llm = llm
         self._merge = prompts.load(merge_prompt)

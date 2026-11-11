@@ -14,13 +14,13 @@ from psycopg import sql
 
 from lite_mem.db import migrate
 from lite_mem.engine import MemoryEngine
-from lite_mem.extract import RuleExtractor
 from lite_mem.factory import Components
 from lite_mem.resolve import AddOnlyResolver
 from lite_mem.stores.base import Store
 from lite_mem.stores.pg import PgStore, PgTx
 from lite_mem.stores.sqlite import SqliteStore, SqliteTx
-from lite_mem.testing import FakeEmbedder
+from lite_mem.testing import FakeEmbedder, RuleExtractor
+from lite_mem.types import Scope
 
 TEST_SCHEMA = "lite_mem_test"
 
@@ -129,3 +129,8 @@ def count_rows(store: Store, table: str, user_id: str | None = None) -> int:
             f"SELECT count(*) AS n FROM {name}{where}", (user_id,) if user_id else ()
         )
         return int(row.fetchone()["n"])
+
+
+def current(engine: MemoryEngine, scope: Scope | None = None) -> list[str]:
+    """The scope's current memories' contents, sorted (default: user "ada")."""
+    return sorted(m.content for m in engine.list_memories(scope or Scope(user_id="ada")))

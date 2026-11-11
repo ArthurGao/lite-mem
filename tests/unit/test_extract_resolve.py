@@ -8,21 +8,13 @@ import pytest
 
 from lite_mem.config import LLMConfig
 from lite_mem.errors import ModelError
-from lite_mem.extract import MAX_FACTS, ExtractedFact, LlmExtractor, RuleExtractor, normalise
+from lite_mem.extract import MAX_FACTS, ExtractedFact, LlmExtractor, normalise
 from lite_mem.llm import AnthropicLLM, OpenAICompatibleLLM, RoutedLLM
 from lite_mem.resolve import Decision, LlmResolver
-from lite_mem.testing import FakeLLM, user_lines
-from lite_mem.types import Memory, Message, Scope
+from lite_mem.testing import FakeLLM, RuleExtractor, memory, user_lines
+from lite_mem.types import Message
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
-
-
-def _memory(content: str) -> Memory:
-    return Memory(
-        id=uuid.uuid4(), scope=Scope("ada"), type="semantic", key=None, content=content,
-        importance=0.5, confidence=0.8, valid_from=NOW, valid_to=None, superseded_by=None,
-        expires_at=None, source=None, metadata={}, access_count=0, created_at=NOW, updated_at=NOW,
-    )  # fmt: skip
 
 
 def test_normalise_clips_dedupes_and_caps() -> None:
@@ -59,7 +51,7 @@ def test_no_user_turn_means_no_call() -> None:
 
 
 def test_the_resolver_decides_in_code() -> None:
-    old = _memory("Lives in Berlin")
+    old = memory("Lives in Berlin")
     nothing = FakeLLM()
     assert LlmResolver(nothing).resolve("x", []).action == "ADD" and nothing.calls == []
 
@@ -113,12 +105,12 @@ def test_the_openai_compatible_client_sends_a_strict_schema() -> None:
 
 
 def test_an_update_can_keep_the_part_of_the_old_fact_that_still_holds() -> None:
-    memory = _memory("lives in Wellington and works as a nurse")
-    body = json.dumps({"action": "UPDATE", "target_id": str(memory.id), "reason": "moved",
+    old = memory("lives in Wellington and works as a nurse")
+    body = json.dumps({"action": "UPDATE", "target_id": str(old.id), "reason": "moved",
                        "remainder": "works as a nurse"})  # fmt: skip
     client, _ = _openai(body)
     resolver = LlmResolver(OpenAICompatibleLLM(LLMConfig(model="m"), client))
-    resolution = resolver.resolve("moved to Auckland", [memory])
+    resolution = resolver.resolve("moved to Auckland", [old])
     assert (resolution.action, resolution.remainder) == ("UPDATE", "works as a nurse")
 
 

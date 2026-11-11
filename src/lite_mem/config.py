@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, Field, SecretStr, StringConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from lite_mem import prompts
 from lite_mem.sensitive import Policy
 from lite_mem.types import MemoryType
 
@@ -61,8 +62,8 @@ class PipelineConfig(BaseModel):
 
     resolver: Literal["llm", "add_only"] = "llm"  # add_only: mem0 2.2.1's behaviour
     related: int = Field(default=5, ge=1, le=20)  # existing memories each fact is compared with
-    extract_prompt: str = "extract_facts.j2"  # a file in lite_mem/prompts
-    resolve_prompt: str = "resolve_conflict.j2"
+    extract_prompt: str = prompts.EXTRACT  # a file in lite_mem/prompts
+    resolve_prompt: str = prompts.RESOLVE
     # Secrets (passwords, card and ID numbers, API keys; lite_mem.sensitive): drop (default),
     # mask the value, or keep. Applies to every write, not only add(infer=true).
     sensitive: Policy = "drop"
@@ -86,8 +87,8 @@ class MaintainConfig(BaseModel):
     # that nothing retrieved for `forget_idle_days`. None (default): off.
     forget_below: float | None = Field(default=None, gt=0)
     forget_idle_days: int = Field(default=90, ge=1)
-    merge_prompt: str = "consolidate_merge.j2"
-    summarise_prompt: str = "consolidate_summarise.j2"
+    merge_prompt: str = prompts.MERGE
+    summarise_prompt: str = prompts.SUMMARISE
 
     @field_validator("merge_types")
     @classmethod
@@ -180,6 +181,9 @@ class ServerConfig(BaseModel):
     # LITEMEM_SERVER__API_KEYS='[{"id": …, "sha256": …, "namespaces": [...]}]'. None configured:
     # the service only serves loopback clients and `litemem serve` refuses any other bind address.
     api_keys: list[ApiKey] = Field(default_factory=list)
+    # How many namespaces one service process opens: a key with a broad glob (`steward/*`) could
+    # otherwise bind new names without end (Codex S8).
+    max_namespaces: int = Field(default=1000, ge=1)
 
 
 class Settings(BaseSettings):

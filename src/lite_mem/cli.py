@@ -1,4 +1,4 @@
-"""`litemem` command line. Commands are added as their stage lands (design §12)."""
+"""`litemem` command line: the engine's operations, the eval, the HTTP service and its keys."""
 
 import dataclasses
 import json

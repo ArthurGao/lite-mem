@@ -6,7 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lite_mem.types import HistoryEntry, Memory, MemoryEvent, MemoryHit, MemoryType, Scope
+from lite_mem.engine import MAX_MESSAGE_CHARS, MAX_MESSAGES
+from lite_mem.types import Fact, HistoryEntry, Memory, MemoryEvent, MemoryHit, MemoryType, Scope
 
 
 class _Body(BaseModel):
@@ -24,14 +25,35 @@ class ScopeIn(_Body):
 
 class MessageIn(_Body):
     role: Literal["user", "assistant", "system"]
-    content: str
+    content: str = Field(max_length=MAX_MESSAGE_CHARS)
 
 
 class AddIn(_Body):
-    messages: list[MessageIn] = Field(min_length=1)
+    messages: list[MessageIn] = Field(min_length=1, max_length=MAX_MESSAGES)
     scope: ScopeIn
     infer: bool = True
     metadata: dict[str, Any] | None = None
+
+
+class RememberIn(_Body):
+    """One fact as the caller states it (the engine's `remember`)."""
+
+    content: str = Field(max_length=MAX_MESSAGE_CHARS)
+    scope: ScopeIn
+    type: MemoryType = "semantic"
+    key: str | None = None
+    importance: float = 0.5
+    confidence: float = 0.8
+    expires_at: datetime | None = None
+    source: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def to_fact(self) -> Fact:
+        return Fact(
+            self.content, type=self.type, key=self.key, importance=self.importance,
+            confidence=self.confidence, expires_at=self.expires_at, source=self.source,
+            metadata=self.metadata,
+        )  # fmt: skip
 
 
 class SearchIn(_Body):
@@ -67,13 +89,3 @@ class HistoryOut(BaseModel):
 
 class ErasedOut(BaseModel):
     erased: int
-
-
-class MaintainOut(BaseModel):
-    """What `maintain` changed, with its events (a mirror such as llm-steward maps them)."""
-
-    expired: int
-    merged: int
-    summarised: int
-    forgotten: int
-    events: list[MemoryEvent]

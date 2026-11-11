@@ -14,6 +14,7 @@ from lite_mem.errors import ModelError
 from lite_mem.factory import Components
 from lite_mem.server.app import PROBLEM, create_app
 from lite_mem.server.auth import new_key
+from lite_mem.stores.base import Store
 from lite_mem.stores.pg import PgStore
 from lite_mem.testing import FakeEmbedder
 from lite_mem.types import Scope
@@ -30,7 +31,7 @@ def _settings(keys: bool = True) -> Settings:
 
 
 @pytest.fixture
-def components(store: PgStore) -> Components:
+def components(store: Store) -> Components:
     return fake_components(store)
 
 
@@ -283,3 +284,43 @@ def test_the_default_app_shares_its_components_across_namespaces(
         assert client.get("/health").json()["status"] == "ok"
     assert len(opened) == 1  # one store, one embedder, one set of LLM clients
     assert built == ["app", "steward/1"]  # one engine per namespace; health needs none
+
+
+def test_a_glob_key_cannot_create_namespaces_without_bound(components: Components) -> None:
+    """Codex S8: every new name bound a namespace and cached an engine, for good."""
+    settings = _settings().model_copy(
+        update={"server": ServerConfig(api_keys=[STEWARD_KEY], max_namespaces=2)}
+    )
+    client = TestClient(create_app(settings, components))
+    for ns in ("steward/1", "steward/2", "steward/1"):
+        assert _list(client, **_auth(STEWARD_TOKEN, ns)).status_code == 200
+    assert _is_problem(_list(client, **_auth(STEWARD_TOKEN, "steward/3")), 403)
+
+
+def test_the_list_route_pages(components: Components) -> None:
+    client = _client(components)
+    for n in range(3):
+        _add(client, f"fact {n}")
+    r = client.get("/v1/memories", params={"user_id": "ada", "limit": 2, "offset": 1},
+                   headers=_auth())  # fmt: skip
+    assert [m["content"] for m in r.json()["memories"]] == ["fact 1", "fact 2"]
+    assert _is_problem(
+        client.get("/v1/memories", params={"user_id": "ada", "limit": 0}, headers=_auth()), 422
+    )
+
+
+def test_remember_stores_a_fact_as_given(components: Components) -> None:
+    """S8 (for S9): the library's `remember` over HTTP — a governed memory pushed as is, with an
+    idempotency key so a retry does not write twice."""
+    client = _client(components)
+    body = {"content": "Wellington", "scope": {"user_id": "ada"}, "type": "profile",
+            "key": "city", "metadata": {"source": "steward"}}  # fmt: skip
+    first = client.post("/v1/memories", json=body, headers={**_auth(), "Idempotency-Key": "m-1"})
+    again = client.post("/v1/memories", json=body, headers={**_auth(), "Idempotency-Key": "m-1"})
+    assert first.status_code == 200 and first.json() == again.json()
+    [event] = first.json()["events"]
+    assert (event["op"], event["content"]) == ("ADD", "Wellington")
+    moved = client.post("/v1/memories", json={**body, "content": "Auckland"}, headers=_auth())
+    assert moved.json()["events"][0]["replaced"] == event["memory_id"]  # the key's new value
+    secret = client.post("/v1/memories", json={**body, "content": "PIN is 4829"}, headers=_auth())
+    assert _is_problem(secret, 400) and "4829" not in secret.text

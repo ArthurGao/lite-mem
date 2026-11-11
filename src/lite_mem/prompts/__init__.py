@@ -6,6 +6,12 @@ from typing import Any
 
 from lite_mem.types import Memory
 
+# The default template of each step (config and the step classes both use these).
+EXTRACT = "extract_facts.j2"
+RESOLVE = "resolve_conflict.j2"
+MERGE = "consolidate_merge.j2"
+SUMMARISE = "consolidate_summarise.j2"
+
 
 def load(name: str) -> str:
     """One template's text, by file name (e.g. `extract_facts.j2`)."""

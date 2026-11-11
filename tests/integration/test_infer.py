@@ -13,7 +13,7 @@ from lite_mem.resolve import LlmResolver
 from lite_mem.stores.base import Store
 from lite_mem.testing import FakeEmbedder, FakeLLM, Handler, update_when, user_lines
 from lite_mem.types import Message, Scope
-from tests.conftest import Clock, tx_class
+from tests.conftest import Clock, current, tx_class
 
 ADA = Scope(user_id="ada")
 BOB = Scope(user_id="bob")
@@ -32,10 +32,6 @@ def _say(engine: MemoryEngine, scope: Scope, *texts: str, **kw: Any) -> Any:
     return engine.add([Message("user", t) for t in texts], scope, **kw)
 
 
-def _current(engine: MemoryEngine, scope: Scope = ADA) -> list[str]:
-    return sorted(m.content for m in engine.list_memories(scope))
-
-
 def test_beijing_then_shanghai_supersedes(store: Store, clock: Clock) -> None:
     engine, llm = _engine(store, clock, update_when("搬"))
     [first] = _say(engine, ADA, "我住北京")
@@ -48,7 +44,7 @@ def test_beijing_then_shanghai_supersedes(store: Store, clock: Clock) -> None:
         first.memory_id,
         "fake:fake-llm",
     )
-    assert _current(engine) == ["我搬到上海了"]
+    assert current(engine) == ["我搬到上海了"]
     assert [m.content for m in engine.list_memories(ADA, as_of=then)] == ["我住北京"]
     assert [h.op for h in engine.history(first.memory_id)] == ["ADD", "SUPERSEDE"]
     resolve_calls = [p for r, p in llm.calls if r == "resolve"]
@@ -61,7 +57,7 @@ def test_a_duplicate_is_not_written_again(store: Store, clock: Clock) -> None:
     )
     _say(engine, ADA, "我喜欢绿茶")  # nothing related yet: added without asking
     assert _say(engine, ADA, "我喜欢绿茶") == []
-    assert _current(engine) == ["我喜欢绿茶"]
+    assert current(engine) == ["我喜欢绿茶"]
 
 
 def test_a_target_outside_the_candidates_is_added_instead(store: Store, clock: Clock) -> None:
@@ -71,7 +67,7 @@ def test_a_target_outside_the_candidates_is_added_instead(store: Store, clock: C
     )
     _say(engine, ADA, "Lives in Berlin")
     [e] = _say(engine, ADA, "Lives in Paris")
-    assert e.op == "ADD" and _current(engine) == ["Lives in Berlin", "Lives in Paris"]
+    assert e.op == "ADD" and current(engine) == ["Lives in Berlin", "Lives in Paris"]
 
 
 def test_delete_retires_the_old_fact_and_keeps_the_new_one(store: Store, clock: Clock) -> None:
@@ -83,7 +79,7 @@ def test_delete_retires_the_old_fact_and_keeps_the_new_one(store: Store, clock: 
     events = _say(engine, ADA, "No longer has a cat")
     assert [e.op for e in events] == ["DELETE", "ADD"]
     assert events[0].reason == "gone" and events[0].produced_by == "fake:fake-llm"
-    assert _current(engine) == ["No longer has a cat"]
+    assert current(engine) == ["No longer has a cat"]
 
 
 def test_related_memories_come_from_exactly_this_scope(store: Store, clock: Clock) -> None:
@@ -92,7 +88,7 @@ def test_related_memories_come_from_exactly_this_scope(store: Store, clock: Cloc
     _say(engine, Scope(), "公司在北京")  # shared: visible to Ada, but not hers to supersede
     _say(engine, ADA, "我搬到上海了")
     assert [p for r, p in llm.calls if r == "resolve"] == []  # nothing of hers to compare with
-    assert _current(engine, BOB) == ["我住北京"]
+    assert current(engine, BOB) == ["我住北京"]
 
 
 def test_a_retry_with_the_same_key_calls_no_model(store: Store, clock: Clock) -> None:
@@ -100,7 +96,7 @@ def test_a_retry_with_the_same_key_calls_no_model(store: Store, clock: Clock) ->
     first = _say(engine, ADA, "我住北京", idempotency_key="episode-1")
     calls = len(llm.calls)
     assert _say(engine, ADA, "我住北京", idempotency_key="episode-1") == first
-    assert len(llm.calls) == calls and _current(engine) == ["我住北京"]
+    assert len(llm.calls) == calls and current(engine) == ["我住北京"]
 
 
 def test_the_batch_is_one_transaction(
@@ -121,7 +117,7 @@ def test_the_batch_is_one_transaction(
     with pytest.raises(RuntimeError):
         _say(engine, ADA, "我搬到上海了", "我喜欢绿茶")  # a supersede, then a failing add
     monkeypatch.undo()
-    assert _current(engine) == ["我住北京"]  # the supersede rolled back with it
+    assert current(engine) == ["我住北京"]  # the supersede rolled back with it
 
 
 def test_a_target_changed_meanwhile_is_added_instead(store: Store, clock: Clock) -> None:
@@ -137,7 +133,7 @@ def test_a_target_changed_meanwhile_is_added_instead(store: Store, clock: Clock)
     holder["engine"] = engine
     _say(engine, ADA, "Lives in Berlin")
     [e] = _say(engine, ADA, "Lives in Paris")
-    assert e.op == "ADD" and _current(engine) == ["Lives in Paris"]
+    assert e.op == "ADD" and current(engine) == ["Lives in Paris"]
 
 
 def test_without_an_extractor_infer_is_a_config_error(engine: MemoryEngine) -> None:
@@ -163,11 +159,11 @@ def test_a_real_round_trip_with_local_models(store: Store, clock: Clock) -> None
     assert first and all(e.produced_by and e.produced_by.startswith("openai:qwen3") for e in first)
     clock.tick()
     engine.add([Message("user", "跟你说一下，我上个月搬到上海了。")], ADA)
-    current = " ".join(_current(engine))
+    said = " ".join(current(engine))
     # the model may answer in either language (measured in S5): assert the structure only
-    assert "北京" not in current and "Beijing" not in current  # superseded
-    assert "上海" in current or "Shanghai" in current
-    assert "绿茶" in current or "green tea" in current.lower()  # unrelated facts stay
+    assert "北京" not in said and "Beijing" not in said  # superseded
+    assert "上海" in said or "Shanghai" in said
+    assert "绿茶" in said or "green tea" in said.lower()  # unrelated facts stay
 
 
 def test_facts_of_one_batch_are_resolved_against_each_other(store: Store, clock: Clock) -> None:
@@ -189,7 +185,7 @@ def test_facts_of_one_batch_are_resolved_against_each_other(store: Store, clock:
     _say(engine, ADA, "住在北京")
     events = _say(engine, ADA, "住在上海", "上个月搬到上海")
     assert [e.op for e in events] == ["SUPERSEDE"]
-    assert _current(engine) == ["住在上海"]
+    assert current(engine) == ["住在上海"]
 
 
 def test_a_later_fact_can_replace_an_earlier_one_of_its_batch(store: Store, clock: Clock) -> None:
@@ -213,7 +209,7 @@ def test_a_later_fact_can_replace_an_earlier_one_of_its_batch(store: Store, cloc
         "上个月搬到了上海浦东",
         first.memory_id,
     )
-    assert _current(engine) == ["上个月搬到了上海浦东"]
+    assert current(engine) == ["上个月搬到了上海浦东"]
 
 
 def test_a_resolver_cannot_reach_another_users_memory(store: Store, clock: Clock) -> None:
@@ -229,7 +225,7 @@ def test_a_resolver_cannot_reach_another_users_memory(store: Store, clock: Clock
     _say(engine, ADA, "Lives in Rome")  # nothing of hers yet: resolved without asking
     [event] = _say(engine, ADA, "Lives in Paris")
     assert event.op == "ADD" and "not among the candidates" in (event.reason or "")
-    assert _current(engine, BOB) == ["Lives in Berlin"]  # untouched
+    assert current(engine, BOB) == ["Lives in Berlin"]  # untouched
 
 
 def test_an_update_keeps_the_part_of_a_compound_fact_that_still_holds(
@@ -240,7 +236,7 @@ def test_an_update_keeps_the_part_of_a_compound_fact_that_still_holds(
     engine, _ = _engine(store, clock, update_when("moved", remainder="works as a nurse"))
     [first] = _say(engine, ADA, "lives in Wellington and works as a nurse")
     events = _say(engine, ADA, "moved to Auckland")
-    assert _current(engine) == ["moved to Auckland", "works as a nurse"]
+    assert current(engine) == ["moved to Auckland", "works as a nurse"]
     by_op = {e.op: e for e in events}
     assert by_op["SUPERSEDE"].replaced == first.memory_id
     kept = by_op["ADD"]
@@ -252,4 +248,4 @@ def test_a_remainder_is_screened_like_any_derived_fact(store: Store, clock: Cloc
     engine, _ = _engine(store, clock, update_when("moved", remainder="her PIN is 482915"))
     _say(engine, ADA, "lives in Wellington")
     _say(engine, ADA, "moved to Auckland")
-    assert _current(engine) == ["moved to Auckland"]
+    assert current(engine) == ["moved to Auckland"]

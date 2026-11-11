@@ -12,6 +12,7 @@ from lite_mem.sensitive import Policy
 from lite_mem.stores.base import Store
 from lite_mem.testing import FakeEmbedder, FakeLLM, update_when, user_lines
 from lite_mem.types import Fact, Message, Scope
+from tests.conftest import current
 
 ADA = Scope(user_id="ada")
 SAID = ["住在上海", "我的银行卡密码是 482915", "card 4111 1111 1111 1111 is my visa"]
@@ -25,15 +26,11 @@ def _engine(store: Store, sensitive: Policy) -> MemoryEngine:
     )  # fmt: skip
 
 
-def _current(engine: MemoryEngine) -> list[str]:
-    return sorted(m.content for m in engine.list_memories(ADA))
-
-
 @pytest.mark.parametrize("infer", [True, False])
 def test_drop_keeps_secrets_out_of_derived_memories(store: Store, infer: bool) -> None:
     engine = _engine(store, "drop")
     events = engine.add([Message("user", t) for t in SAID], ADA, infer=infer)
-    assert _current(engine) == ["住在上海"]
+    assert current(engine) == ["住在上海"]
     assert len(events) == 1
     history = [e for m in engine.list_memories(ADA) for e in engine.history(m.id)]
     assert "482915" not in repr(history)
@@ -42,7 +39,7 @@ def test_drop_keeps_secrets_out_of_derived_memories(store: Store, infer: bool) -
 def test_mask_keeps_the_fact_without_the_value(store: Store) -> None:
     engine = _engine(store, "mask")
     engine.add([Message("user", t) for t in SAID], ADA)
-    assert _current(engine) == [
+    assert current(engine) == [
         "card [redacted] is my visa",
         "住在上海",
         "我的银行卡密码是 [redacted]",
@@ -52,7 +49,7 @@ def test_mask_keeps_the_fact_without_the_value(store: Store) -> None:
 def test_keep_stores_what_was_said(store: Store) -> None:
     engine = _engine(store, "keep")
     engine.add([Message("user", SAID[1])], ADA)
-    assert _current(engine) == ["我的银行卡密码是 482915"]
+    assert current(engine) == ["我的银行卡密码是 482915"]
 
 
 def test_an_explicit_secret_is_refused_under_drop(store: Store) -> None:
@@ -62,7 +59,7 @@ def test_an_explicit_secret_is_refused_under_drop(store: Store) -> None:
     [event] = engine.remember(Fact("wifi is in the hallway"), ADA)
     with pytest.raises(InvalidRequest, match="card"):
         engine.update(event.memory_id, "pays with 4111 1111 1111 1111")
-    assert _current(engine) == ["wifi is in the hallway"]
+    assert current(engine) == ["wifi is in the hallway"]
 
 
 def test_a_reason_never_carries_a_secret_into_history(store: Store) -> None:
@@ -78,4 +75,4 @@ def test_a_reason_never_carries_a_secret_into_history(store: Store) -> None:
 def test_an_explicit_secret_is_masked_under_mask(store: Store) -> None:
     engine = _engine(store, "mask")
     engine.remember(Fact("wifi password is tiger-77"), ADA)
-    assert _current(engine) == ["wifi password is [redacted]"]
+    assert current(engine) == ["wifi password is [redacted]"]
