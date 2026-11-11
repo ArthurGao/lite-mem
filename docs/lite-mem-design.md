@@ -141,12 +141,12 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 
 ## 6. 整合与遗忘（S7）
 
-- **合并**：同一 scope 内相似度超过阈值（默认 0.92，用 eval 定）的语义记忆，由 `consolidate` 角色合成一条。被合并的旧记忆写 `superseded_by`，历史事件记为 MERGE。
-- **归纳**：一个用户较早的 episodic 记忆（按时间窗口）归纳成 semantic 记忆，例如"每周五都问退款进度"。
-- **遗忘**：
-  - 到了 `expires_at` 的记忆过期，历史记为 EXPIRE；
-  - 衰减权重低于阈值、且长期没被检索命中的 episodic 记忆过期。阈值可配置，默认关闭。
-- 这些都是离线任务（`litemem maintain`，或服务内的定时任务），不在写入路径上。
+- **"当前"只有一个定义**：没有被关闭（`valid_to` 为空），并且没过 `expires_at`（`Memory.holds_at`；读查询在 SQL 里用同一条规则）。过了期的记忆立刻检索不到，`as_of` 仍能看到它到期之前的样子；`maintain` 再把它正式关闭，`valid_to` 取到期的时间，历史记 EXPIRE。写入时 `expires_at` 已过的，直接拒绝。
+- **合并**：同一 scope、同一类型（`semantic`、`procedural`；`profile` 永不合并，新值取代旧值）内，向量相似度不低于阈值的记忆分成组，由 `consolidate` 角色判断是不是**同一个事实**（换了说法，或一条更精确），是就写成一句；说的是不同的事（两个城市、一个变化），就不合并。合并结果是一条新记忆，来源各写 `superseded_by`，每一行都记 MERGE。新记忆的字段由一条规则决定（`_inherit`）：最早那条的类型和 metadata、最高的重要性和置信度、所有来源都会过期时才过期（取最晚的）。合并结果和其他派生事实一样过敏感信息筛查。阈值默认 0.92，S7 用 eval 定（见 §12）。
+- **归纳**（默认关闭）：一个 scope 里早于 N 天的 episodic 记忆，由 `consolidate` 角色归纳成 semantic 事实，每个事实列出它总结的 episode（只能是给它的、每个只用一次），被总结的 episode 以 MERGE 关闭。
+- **遗忘**（默认关闭）：会衰减的类型（配了半衰期的，默认 episodic）里，搜索权重低于阈值、并且 N 天没被检索命中的记忆，以 EXPIRE 关闭。
+- **写入时的复合事实**：消解器判 UPDATE / DELETE 时，如果旧记忆说了几件事、只变了一部分，给出 `remainder`（仍然成立的部分），代码把它另存一条（S6 验收发现："住 Wellington，是护士" 被搬家取代，"是护士"跟着丢了）。
+- 这些都是离线任务：`litemem maintain`、`POST /v1/maintain`，或调用方自己的定时任务；不在写入路径上。模型调用在事务外，写入时在锁下复查（来源仍然有效、仍在同一个 scope），变了的组跳过，下次再看。`maintain` 和 `add` 一样返回事件。
 
 ## 7. HTTP 服务（`litemem serve`）
 
@@ -211,6 +211,10 @@ llm-steward 新增 `LiteMemProvider`，实现它的 `MemoryProvider` Protocol，
   - SUPERSEDE（`replaced` 是被取代的记忆）映射成 `SupersedeMemory`；
   - DELETE 映射成 `DeleteMemory`。
 - **另一个选择**：llm-steward 用 lite-mem 时关掉引擎内的冲突消解，只用抽取，继续走 llm-steward 自己的冲突补偿。见 §13。
+- **离线变化（S7）**：合并和过期不是 llm-steward 的调用触发的。llm-steward 自己定时调用 `maintain`（库或 `POST /v1/maintain`），把返回的事件映射成治理操作：
+  - MERGE（每个被合并的来源一条，`replaced` 是来源）映射成 `SupersedeMemory`（来源 → 新记忆）；
+  - EXPIRE 映射成按到期时间失效。
+  这样它的镜像不会留着已关闭的来源，也不会因为找不到外部引用而丢掉合并出来的新记忆。不在 llm-steward 控制下跑 `maintain`（比如运营方自己的 cron），镜像就会落后——S9 定要不要加一个按游标拉取事件的接口。
 - **治理规则仍由 llm-steward 保证**：
   - 检索结果要经过它的安全网；
   - 它的保留 key（`steward.*`）不会推给引擎；
@@ -306,12 +310,18 @@ lite-mem/
   - /simplify 后：共享组件（原来每个 namespace 一套 HTTP 客户端、一次维度探测，而且建引擎时持有全局锁，第一次用某个 namespace 会卡住所有请求）——改为 `Components` + 按 namespace 加锁、已建好的不加锁读；健康检查不经过 namespace，Docker 每 10 秒的探针不再做 embedding（原来会让 Ollama 永远不卸载模型）；Store 加 `ping()`；去掉自定义的 `Problem` 异常，改用 `HTTPException`；namespace 检查改成一条直线（缺 namespace 一律 400）；compose 用 `env_file` 把 `.env` 全部传进去（原来只列了几个变量，其他设置在容器里悄悄不生效）；CI 不只构建镜像，还启动它；测试里的假引擎收成一个 helper。没做：服务只开已存在的 namespace（S9 里 llm-steward 的 namespace 是动态的，key 的 glob 就是授权边界）；连接池大小可配（事务很短，这个规模下只会排队）；Docker / CI 层缓存（收益小）。
   - Codex：High 没配 key 时信任直接对端，本机的反向代理会让所有请求看起来都来自回环——没配 key 时，带 `Forwarded` / `X-Forwarded-For` / `X-Real-IP` 的请求一律拒绝，要放到代理后面就必须配 key；Medium 未预料的异常绕过 Problem Details——加兜底 handler，返回通用 500，日志脱敏。都先有失败的测试（变异检查：去掉对应代码，测试变红）。
   - 提交后的自动安全审查：没配 key 时，本机浏览器里的网页可以借 DNS rebinding 把请求打到 `127.0.0.1:8710`——没配 key 时还要求 Host 是回环名字（`localhost`、`127.0.0.1`、`[::1]`），并拒绝带 `Origin` 的请求（浏览器发的）。
+- **S7（2026-11-12）**：过期（读查询按引擎时钟排除，`maintain` 以到期时间记 EXPIRE）、合并（`consolidate` 角色，同一 scope、同一类型）、归纳和遗忘（默认关闭）、复合事实的 `remainder`、`litemem maintain` 和 `POST /v1/maintain`、`maintain` 返回事件、eval 的 maintain 钩子；规则见 §6，llm-steward 的映射见 §10。
+  - 合并阈值：在最终代码上跑了基线 + 0.80 / 0.85 / 0.90 / 0.95 四个阈值（`eval/results/2026-11-12-s7-merge.json`），**四个都没有合并任何一条**——合成集里的重复在写入时已被消解器判成 NOOP，扫描定不了阈值。改为直接看 `add_only`（不消解、重复都留着）记忆两两之间的 bge-m3 相似度：唯一一对真重复（"每天早上喝一杯绿茶" / "每天喝绿茶"）0.946；最高的非重复全是冲突或变化（Auckland / Wellington 0.848、准备 / 通过 AWS 考试 0.829、北京 / 上海 0.773）。所以默认 0.92：高于所有冲突对，低于真重复；阈值放到 0.80–0.85 会把冲突送给模型判断"是否同一件事"，判错就把矛盾合成一条。证据很薄（只有一对真重复），换模型或有了真实数据要重看。
+  - 这次扫描的另一个用处：五个配置实际行为相同（都没合并），它们之间的差异就是同一配置重跑的噪声——该忘没忘 2–4/7、hit@3 8–10/11、每次写入 7.9–73.9 秒。一次运行差一两条不能下结论。
+  - 自己发现的：写入时 `expires_at` 已过的记忆让 `maintain` 违反 `valid_to >= valid_from` 检查、整次运行失败（CLI 测试撞出来的）——改为写入时拒绝，关闭时间也不早于 `valid_from`；eval 遇到 Ollama 偶发的 500（今天 12 次，S7 之前就有）整次中断、结果全丢——单次调用失败记一次 error，继续跑。
+  - /simplify 后：Merge 并进 Add（`replaces` 是 0..n 个 id，`closes_as` 是 SUPERSEDE 或 MERGE），新记忆的构造只有一处（`_new_memory`），派生事实继承哪些字段只有一条规则（`_inherit`；原来三处各不相同，合并或拆出 remainder 会把会过期的记忆变成永久的）；派生事实的筛查只有一个入口（`_screened`）；`_embedded` 泛型化，去掉断言；`now` 每次 `maintain` 只取一次；遗忘的类型改为"配了半衰期的类型"；提示词里的记忆列表只有一个写法（`prompts.listed`）；合并提示词只允许"同一事实"，不再把不同的事实拼成一条（会重新制造 S6 的复合事实问题）；eval 的 Variant 显式带 maintain 开关，计数改名 `closed`。没做：每条记忆一次相似查询改成一条 SQL 自连接（离线、每个用户几秒，慢了再改）；把 maintenance 移出 engine.py（大量用到引擎的私有方法，拆开更糟）；按游标拉取事件的接口（S9 定）。
+  - Codex：High 合并写入时只做了不加锁的检查、没核对来源仍在同一 scope、两次 `maintain` 并发会把同一组合并两次——改为写入事务里按 id 顺序加锁、复查（仍有效、同一 scope），不符合就跳过这一组；High profile 可以被配置成参与合并、丢掉 key——配置拒绝 `profile`，合并按类型分组；Medium 已过期但未关闭的记忆仍能被 `update` 等写操作当作当前——"当前"统一为 `Memory.holds_at`，profile 的旧值过期后写新值记 EXPIRE 而不是 SUPERSEDE；Medium 写入时已过期的 `expires_at`——拒绝；Medium 过期时未加锁——加锁复查。都先有失败的测试（变异检查）。不改：`keep` 策略下合并结果可能带出秘密——`keep` 是运营方明确的选择，模型生成的合并也照它办；性能——见上。
 
 ## 13. 待确认
 
 - **llm-steward 接入时冲突消解归谁**（S9 前定）：
   - 引擎消解，llm-steward 映射事件：更简单，能力完整；
   - llm-steward 消解，引擎只抽取：治理层能看到每一次判断，但多一次往返。
-- **合并阈值、遗忘阈值的默认值**：S5、S7 用 eval 定。
+- **合并阈值、遗忘阈值的默认值**：合并 0.92（S7，证据薄，见 §12）；遗忘默认关闭，等有长期使用的数据再定。
 - **和 lite-rag 共用代码**（embedding、BM25、LLM 层）还是各自独立：v1 各自独立（两个仓库都在学习期，接口还在变）；稳定后再考虑抽出一个共享小包。
 - **License**：仓库建立时用 Apache-2.0（与 llm-steward 一致），owner 可以改。

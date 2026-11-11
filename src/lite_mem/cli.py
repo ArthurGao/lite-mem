@@ -1,5 +1,6 @@
 """`litemem` command line. Commands are added as their stage lands (design §12)."""
 
+import dataclasses
 import json
 import uuid
 from collections.abc import Iterator
@@ -119,6 +120,16 @@ def erase_command(
         typer.echo(f"erased {engine.erase(user)} memories of {user}")
 
 
+@app.command()
+def maintain(user: User = None) -> None:
+    """Consolidate and forget (design §6): expire what is due, merge similar memories, and,
+    when enabled, summarise old episodes and forget faint ones. Run it from cron."""
+    with _engine() as engine:
+        report = engine.maintain(user)
+    counts = {k: v for k, v in dataclasses.asdict(report).items() if k != "events"}
+    typer.echo(json.dumps(counts))
+
+
 key_app = typer.Typer(no_args_is_help=True, help="API keys of the HTTP service")
 app.add_typer(key_app, name="key")
 
@@ -204,7 +215,8 @@ def eval_command(
             settings = ev.variant_settings(base, name, schema)
             used[name] = ev.describe(settings, _MODEL_FACING)
             with _engine(settings) as engine:
-                reports.append(ev.run(ev.LiteMemSystem(name, engine), data, k=k))
+                system = ev.LiteMemSystem(name, engine, maintain=ev.VARIANTS[name].maintain)
+                reports.append(ev.run(system, data, k=k))
         if mem0_system:
             used[mem0_system.name] = ev.describe(base, {"llm", "embedding"})
             try:

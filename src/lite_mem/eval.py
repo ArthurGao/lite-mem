@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from lite_mem.config import Settings
 from lite_mem.engine import MemoryEngine
+from lite_mem.errors import LiteMemError
 from lite_mem.types import Message, Scope
 
 
@@ -80,11 +81,16 @@ class System(Protocol):
 
     def reset(self, user_ids: list[str]) -> None: ...
 
+    def maintain(self, user_id: str) -> int:
+        """Offline consolidation after a session (S7); how many memories it closed."""
+        ...
+
 
 class LiteMemSystem:
-    def __init__(self, name: str, engine: MemoryEngine) -> None:
+    def __init__(self, name: str, engine: MemoryEngine, *, maintain: bool = False) -> None:
         self.name = name
         self._engine = engine
+        self._maintain = maintain
 
     def add(self, user_id: str, messages: list[dict[str, str]]) -> None:
         said = [Message(m["role"], m["content"]) for m in messages]
@@ -100,6 +106,11 @@ class LiteMemSystem:
     def reset(self, user_ids: list[str]) -> None:
         for user_id in user_ids:
             self._engine.erase(user_id)
+
+    def maintain(self, user_id: str) -> int:
+        if not self._maintain:
+            return 0
+        return self._engine.maintain(user_id).closed
 
 
 def _ratio(n: int, d: int) -> float:
@@ -117,6 +128,8 @@ class Report:
     questions: int = 0
     hits: int = 0
     memories: int = 0  # current memories at the end, all users
+    closed: int = 0  # memories maintenance closed (expired, merged, summarised, forgotten)
+    errors: int = 0  # calls that failed (the session or question still counts, as a miss)
     add_seconds: list[float] = field(default_factory=list)
     misses: list[str] = field(default_factory=list)  # what went wrong, for reading
 
@@ -144,7 +157,12 @@ def run(system: System, dataset: Dataset, *, k: int = 3) -> Report:
         now: list[str] = []
         for n, session in enumerate(case.sessions, start=1):
             started = time.perf_counter()
-            system.add(case.user_id, session.messages)
+            try:  # one failed model call (a local endpoint's 500) costs a session, not the run
+                system.add(case.user_id, session.messages)
+                report.closed += system.maintain(case.user_id)
+            except LiteMemError as exc:
+                report.errors += 1
+                report.misses.append(f"{case.user_id} s{n}: {exc}")
             report.add_seconds.append(time.perf_counter() - started)
             now = system.current(case.user_id)
             for keywords in session.present:
@@ -160,7 +178,13 @@ def run(system: System, dataset: Dataset, *, k: int = 3) -> Report:
                     report.misses.append(f"{case.user_id} s{n}: still remembers {s.old[0]!r}")
         for question in case.questions:
             report.questions += 1
-            if remembered(system.search(case.user_id, question.q, k), question.answers):
+            try:
+                found = system.search(case.user_id, question.q, k)
+            except LiteMemError as exc:
+                report.errors += 1
+                report.misses.append(f"{case.user_id}: {question.q!r}: {exc}")
+                continue
+            if remembered(found, question.answers):
                 report.hits += 1
             else:
                 report.misses.append(f"{case.user_id}: no hit for {question.q!r}")
@@ -172,14 +196,15 @@ def table(reports: list[Report]) -> str:
     """A markdown comparison table."""
     k = reports[0].k if reports else 3
     lines = [
-        f"| system | remembered | stale | hit@{k} | memories | s/add |",
-        "| --- | --- | --- | --- | --- | --- |",
+        f"| system | remembered | stale | hit@{k} | memories | closed | errors | s/add |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for r in reports:
         lines.append(
             f"| {r.system} | {r.remembered}/{r.present} ({r.recall:.0%}) "
             f"| {r.stale}/{r.stale_checks} ({r.stale_rate:.0%}) "
-            f"| {r.hits}/{r.questions} ({r.hit_rate:.0%}) | {r.memories} "
+            f"| {r.hits}/{r.questions} ({r.hit_rate:.0%}) | {r.memories} | {r.closed} "
+            f"| {r.errors} "
             f"| {r.seconds_per_add:.1f} |"
         )
     return "\n".join(lines)
@@ -232,21 +257,33 @@ def save(path: Path, reports: list[Report], *, dataset: Path, settings: dict[str
 
 # Built-in lite-mem variants (Settings overrides on top of the environment's). "thinking" leaves
 # qwen3's reasoning on: about 20x slower per call on this machine.
-VARIANTS: dict[str, dict[str, Any]] = {
-    "resolve": {"llm": {"reasoning": "none"}},
-    "add_only": {"llm": {"reasoning": "none"}, "pipeline": {"resolver": "add_only"}},
-    "terse_prompt": {
-        "llm": {"reasoning": "none"},
-        "pipeline": {"extract_prompt": "extract_facts_terse.j2"},
+@dataclass(frozen=True)
+class Variant:
+    overrides: dict[str, Any]  # Settings sections, merged over the environment's
+    maintain: bool = False  # run `maintain` after each session
+
+
+_NO_THINKING = {"llm": {"reasoning": "none"}}
+_TERSE = {**_NO_THINKING, "pipeline": {"extract_prompt": "extract_facts_terse.j2"}}
+VARIANTS: dict[str, Variant] = {
+    "resolve": Variant(_NO_THINKING),
+    "add_only": Variant({**_NO_THINKING, "pipeline": {"resolver": "add_only"}}),
+    "terse_prompt": Variant(_TERSE),
+    "thinking": Variant({}),
+    # S7: the terse variant with maintenance after every session, one merge threshold each.
+    **{
+        f"merge_{round(t * 100)}": Variant(
+            {**_TERSE, "maintain": {"merge_threshold": t}}, maintain=True
+        )
+        for t in (0.80, 0.85, 0.90, 0.95)
     },
-    "thinking": {},
 }
 
 
 def variant_settings(base: Settings, name: str, schema: str) -> Settings:
     """`base` with the variant's overrides, its own namespace and the eval schema."""
     data = base.model_dump()
-    for section, values in VARIANTS[name].items():
+    for section, values in VARIANTS[name].overrides.items():
         data[section] = {**data[section], **values}
     data.update(namespace=f"eval/{name.replace('_', '-')}", db_schema=schema)
     return Settings.model_validate(data)

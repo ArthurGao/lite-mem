@@ -35,6 +35,7 @@ from lite_mem.server.schemas import (
     EventsOut,
     HistoryOut,
     HitsOut,
+    MaintainOut,
     MemoriesOut,
     SearchIn,
     UpdateIn,
@@ -204,6 +205,13 @@ def create_app(settings: Settings, components: Components | None = None) -> Fast
     @app.get("/v1/memories/{memory_id}/history", response_model=HistoryOut)
     def history(memory_id: uuid.UUID, engine: Engine) -> HistoryOut:
         return HistoryOut(entries=engine.history(memory_id))
+
+    @app.post("/v1/maintain", response_model=MaintainOut)
+    def maintain(engine: Engine, user_id: str | None = None) -> MaintainOut:
+        """Consolidate and forget now (design §6), for one user or the namespace."""
+        r = engine.maintain(user_id)
+        return MaintainOut(expired=r.expired, merged=r.merged, summarised=r.summarised,
+                           forgotten=r.forgotten, events=list(r.events))  # fmt: skip
 
     @app.delete("/v1/users/{user_id}", response_model=ErasedOut)
     def erase(user_id: str, engine: Engine) -> ErasedOut:

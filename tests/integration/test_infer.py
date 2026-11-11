@@ -231,3 +231,26 @@ def test_a_resolver_cannot_reach_another_users_memory(store: PgStore, clock: Clo
     [event] = _say(engine, ADA, "Lives in Paris")
     assert event.op == "ADD" and "not among the candidates" in (event.reason or "")
     assert _current(engine, BOB) == ["Lives in Berlin"]  # untouched
+
+
+def test_an_update_keeps_the_part_of_a_compound_fact_that_still_holds(
+    store: PgStore, clock: Clock
+) -> None:
+    """S6 acceptance run: superseding "lives in Wellington and works as a nurse" by a move lost
+    the job. The resolver names what still holds; code keeps it as its own memory."""
+    engine, _ = _engine(store, clock, update_when("moved", remainder="works as a nurse"))
+    [first] = _say(engine, ADA, "lives in Wellington and works as a nurse")
+    events = _say(engine, ADA, "moved to Auckland")
+    assert _current(engine) == ["moved to Auckland", "works as a nurse"]
+    by_op = {e.op: e for e in events}
+    assert by_op["SUPERSEDE"].replaced == first.memory_id
+    kept = by_op["ADD"]
+    assert kept.content == "works as a nurse" and kept.produced_by == "fake:fake-llm"
+    assert str(first.memory_id) in (kept.reason or "")
+
+
+def test_a_remainder_is_screened_like_any_derived_fact(store: PgStore, clock: Clock) -> None:
+    engine, _ = _engine(store, clock, update_when("moved", remainder="her PIN is 482915"))
+    _say(engine, ADA, "lives in Wellington")
+    _say(engine, ADA, "moved to Auckland")
+    assert _current(engine) == ["moved to Auckland"]

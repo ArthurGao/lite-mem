@@ -1,0 +1,377 @@
+{
+  "at": "2026-11-11T20:13:01+00:00",
+  "git": "bdfc8ff",
+  "dataset": "eval/dataset.json",
+  "dataset_sha256": "52678ce502dbaf3a86812e5da134f397f6f9aa8f807ccbc1a0d083413b5a1d71",
+  "k": 3,
+  "settings": {
+    "terse_prompt": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    },
+    "merge_80": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    },
+    "merge_85": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    },
+    "merge_90": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    },
+    "merge_95": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    }
+  },
+  "reports": [
+    {
+      "system": "terse_prompt",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 4,
+      "questions": 11,
+      "hits": 8,
+      "memories": 18,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        11.262703041022178,
+        8.192972540971823,
+        12.539779916987754,
+        21.046128124988172,
+        9.318022999970708,
+        0.5864445840124972,
+        12.195823291956913,
+        6.057278916996438,
+        8.699466666963417,
+        4.7808505409630015,
+        124.81625662499573
+      ],
+      "misses": [
+        "xiaowang s3: still remembers '会计'",
+        "xiaowang: no hit for '她现在住在哪个城市？'",
+        "emma s2: forgot 'Mo'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma s4: still remembers 'night shift'",
+        "emma: no hit for 'Which city does Emma live in?'",
+        "emma: no hit for \"What is her dog's name?\"",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.5714285714285714,
+      "hit_rate": 0.7272727272727273
+    },
+    {
+      "system": "merge_80",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 3,
+      "questions": 11,
+      "hits": 10,
+      "memories": 18,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        8.76898816699395,
+        4.666603791993111,
+        15.426621458027512,
+        8.417817541980185,
+        9.475185041956138,
+        0.5567137909820303,
+        12.731633999967016,
+        6.53563454200048,
+        10.616219874995295,
+        5.170576624979731,
+        4.799452333012596
+      ],
+      "misses": [
+        "emma s2: forgot 'Mo'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma s4: still remembers 'night shift'",
+        "emma: no hit for \"What is her dog's name?\"",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.42857142857142855,
+      "hit_rate": 0.9090909090909091
+    },
+    {
+      "system": "merge_85",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 4,
+      "questions": 11,
+      "hits": 9,
+      "memories": 18,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        257.7497560000047,
+        5.803797792003024,
+        13.395688334014267,
+        7.102616666001268,
+        9.663846167037264,
+        0.6376193750184029,
+        12.488056125002913,
+        6.861298292002175,
+        9.14955720800208,
+        4.882313332986087,
+        5.0514680839842185
+      ],
+      "misses": [
+        "xiaowang s3: still remembers '会计'",
+        "xiaowang: no hit for '她现在住在哪个城市？'",
+        "emma s2: forgot 'Mo'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma s4: still remembers 'night shift'",
+        "emma: no hit for \"What is her dog's name?\"",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.5714285714285714,
+      "hit_rate": 0.8181818181818182
+    },
+    {
+      "system": "merge_90",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 2,
+      "questions": 11,
+      "hits": 10,
+      "memories": 18,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        129.81773104099557,
+        5.385131000017282,
+        13.042736375005916,
+        7.389549459039699,
+        10.385242708027363,
+        0.5781391250202432,
+        12.24762149999151,
+        7.489580666006077,
+        10.961429374990985,
+        5.391407666960731,
+        6.972883082984481
+      ],
+      "misses": [
+        "emma s2: forgot 'Mo'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma s4: still remembers 'night shift'",
+        "emma: no hit for \"What is her dog's name?\""
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.2857142857142857,
+      "hit_rate": 0.9090909090909091
+    },
+    {
+      "system": "merge_95",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 3,
+      "questions": 11,
+      "hits": 9,
+      "memories": 17,
+      "closed": 0,
+      "errors": 1,
+      "add_seconds": [
+        137.00923708401388,
+        245.78138045896776,
+        15.298460125050042,
+        364.6261475000065,
+        10.399294417002238,
+        0.5819078329950571,
+        12.477985291974619,
+        6.365040958044119,
+        8.543292334012222,
+        4.7270680840010755,
+        6.624802541045938
+      ],
+      "misses": [
+        "xiaowang s3: still remembers '北京'",
+        "xiaowang s4: resolve (openai:qwen3:8b) failed: APITimeoutError",
+        "xiaowang: no hit for '她现在住在哪个城市？'",
+        "emma s2: forgot 'Mo'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma s4: still remembers 'night shift'",
+        "emma: no hit for \"What is her dog's name?\""
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.42857142857142855,
+      "hit_rate": 0.8181818181818182
+    }
+  ]
+}

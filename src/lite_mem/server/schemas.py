@@ -67,3 +67,13 @@ class HistoryOut(BaseModel):
 
 class ErasedOut(BaseModel):
     erased: int
+
+
+class MaintainOut(BaseModel):
+    """What `maintain` changed, with its events (a mirror such as llm-steward maps them)."""
+
+    expired: int
+    merged: int
+    summarised: int
+    forgotten: int
+    events: list[MemoryEvent]

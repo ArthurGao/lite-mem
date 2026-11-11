@@ -130,6 +130,27 @@ def test_idempotency_key_replays_and_refuses_another_user(components: Components
     assert _is_problem(_add(client, "x", user="bob", **{"Idempotency-Key": "ep-1"}), 409)
 
 
+def test_maintain_reports_its_events(components: Components) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from lite_mem.engine import MemoryEngine
+    from lite_mem.types import Fact
+
+    now = datetime.now(UTC)
+    earlier = MemoryEngine(
+        components.store, "app", FakeEmbedder(), clock=lambda: now - timedelta(hours=2)
+    )
+    [event] = earlier.remember(Fact("parked", expires_at=now - timedelta(hours=1)), Scope("ada"))
+    client = _client(components)
+    r = client.post("/v1/maintain", params={"user_id": "ada"}, headers=_auth())
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["expired"], body["merged"]) == (1, 0)
+    assert [(e["op"], e["memory_id"]) for e in body["events"]] == [("EXPIRE", str(event.memory_id))]
+    other = client.post("/v1/maintain", headers=_auth(STEWARD_TOKEN, "app"))
+    assert _is_problem(other, 403)
+
+
 def test_errors_are_problem_details(components: Components) -> None:
     client = _client(components)
     missing = client.get(f"/v1/memories/{uuid.uuid4()}", headers=_auth())

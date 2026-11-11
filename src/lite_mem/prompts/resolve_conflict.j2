@@ -8,3 +8,8 @@ about the same person and choose exactly one action:
 
 Rules: name only an id from EXISTING (target_id; null for ADD and NOOP). When unsure, choose ADD.
 Give a one-sentence reason.
+
+remainder: when you UPDATE or DELETE an existing fact that says several things and only some of them
+changed, write the parts that are still true as one short fact, in that fact's language (e.g. it said
+"lives in Wellington and works as a nurse", the new fact is a move: remainder "works as a nurse").
+Otherwise null.

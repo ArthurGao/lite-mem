@@ -62,7 +62,13 @@ class Memory:
 
     @property
     def current(self) -> bool:
+        """Open (not closed by a write). See `holds_at` for whether it is in effect."""
         return self.valid_to is None
+
+    def holds_at(self, now: datetime) -> bool:
+        """In effect at `now`: open and not past its expiry. The one rule every check uses (reads
+        apply the same rule in SQL, stores/pg.py `_where`)."""
+        return self.valid_to is None and (self.expires_at is None or self.expires_at > now)
 
 
 @dataclass(frozen=True)
@@ -74,7 +80,8 @@ class MemoryEvent:
     content: str | None = None
     reason: str | None = None
     produced_by: str | None = None  # provider:model when a model made the change
-    replaced: uuid.UUID | None = None  # SUPERSEDE / MERGE: the memory this one closed
+    # SUPERSEDE / MERGE: the memory this one closed (a MERGE reports one event per memory closed)
+    replaced: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)

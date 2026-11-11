@@ -42,6 +42,28 @@ def _failed(role: Role, target: ModelTarget, exc: BaseException) -> ModelError:
     return ModelError(f"{role} ({target.provider}:{target.model}) failed: {type(exc).__name__}")
 
 
+def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """`model`'s JSON schema as strict structured output wants it: every property required (an
+    optional one is still nullable), no extra properties, in every nested object too."""
+    schema = model.model_json_schema()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("properties"), dict):
+                node["required"] = list(node["properties"])
+                node["additionalProperties"] = False
+                for prop in node["properties"].values():
+                    prop.pop("default", None)  # strict mode rejects defaults
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(schema)
+    return schema
+
+
 def _parsed[T: BaseModel](role: Role, schema: type[T], raw: Any, provenance: Provenance) -> T:
     """The reply as the role's model, or ModelError (never a half-parsed answer)."""
     if raw is None:
@@ -82,7 +104,7 @@ class OpenAICompatibleLLM:
                     "type": "json_schema",
                     "json_schema": {
                         "name": schema.__name__,
-                        "schema": schema.model_json_schema(),
+                        "schema": strict_schema(schema),
                         "strict": True,
                     },
                 },
@@ -132,7 +154,7 @@ class AnthropicLLM:
                 messages=[
                     {"role": "user", "content": json.dumps(dict(payload), ensure_ascii=False)}
                 ],
-                tools=[{"name": name, "input_schema": schema.model_json_schema()}],
+                tools=[{"name": name, "input_schema": strict_schema(schema)}],
                 tool_choice={"type": "tool", "name": name},
                 timeout=target.timeout_s,
             )

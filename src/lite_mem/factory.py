@@ -3,7 +3,8 @@ extractor and resolver. The library can also build a MemoryEngine by hand."""
 
 from dataclasses import dataclass, field
 
-from lite_mem.config import SearchConfig, Settings
+from lite_mem.config import MaintainConfig, SearchConfig, Settings
+from lite_mem.consolidate import Consolidator, LlmConsolidator
 from lite_mem.embedding import Embedder, build_embedder
 from lite_mem.engine import MemoryEngine, health
 from lite_mem.errors import ConfigError
@@ -32,12 +33,15 @@ class Components:
     related: int = 5
     search: SearchConfig = field(default_factory=SearchConfig)
     sensitive: Policy = "drop"
+    consolidator: Consolidator | None = None
+    maintenance: MaintainConfig = field(default_factory=MaintainConfig)
 
     def engine(self, namespace: str) -> MemoryEngine:
         return MemoryEngine(
             self.store, namespace, self.embedder, extractor=self.extractor,
             resolver=self.resolver, related=self.related, search=self.search,
-            sensitive=self.sensitive,
+            sensitive=self.sensitive, consolidator=self.consolidator,
+            maintenance=self.maintenance,
         )  # fmt: skip
 
     def health(self, *, deep: bool) -> dict[str, str]:
@@ -59,6 +63,10 @@ def open_components(
         related=pipe.related,
         search=settings.search,
         sensitive=pipe.sensitive,
+        consolidator=LlmConsolidator(
+            llm, settings.maintain.merge_prompt, settings.maintain.summarise_prompt
+        ),
+        maintenance=settings.maintain,
     )
 
 

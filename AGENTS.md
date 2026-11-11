@@ -24,7 +24,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S7 — consolidation and forgetting** (design §12). S0–S6 done 2026-11-12; eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
+**S7b — optional SQLite store** (design §12; optional: S8 may come first). S0–S7 done 2026-11-12; eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
 
 ## Rules
 

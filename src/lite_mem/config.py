@@ -6,10 +6,11 @@ Precedence, highest first: explicit arguments, environment, `.env`, defaults."""
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, Field, SecretStr, StringConstraints
+from pydantic import AfterValidator, BaseModel, Field, SecretStr, StringConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lite_mem.sensitive import Policy
+from lite_mem.types import MemoryType
 
 OLLAMA_URL = "http://127.0.0.1:11434"  # the local Ollama server (embeddings: /api, LLM: /v1)
 
@@ -65,6 +66,35 @@ class PipelineConfig(BaseModel):
     # Secrets (passwords, card and ID numbers, API keys; lite_mem.sensitive): drop (default),
     # mask the value, or keep. Applies to every write, not only add(infer=true).
     sensitive: Policy = "drop"
+
+
+class MaintainConfig(BaseModel):
+    """Consolidation and forgetting (design §6), run offline by `maintain`."""
+
+    # Merge memories of one scope whose embeddings are at least this similar (cosine), when
+    # the `consolidate` role agrees they say one thing. None: no merging.
+    merge_threshold: float | None = Field(default=0.92, gt=0, le=1)
+    # Merged within one type at a time; never `profile` (a key holds one value: a new value
+    # supersedes it, there is nothing to merge).
+    merge_types: tuple[MemoryType, ...] = ("semantic", "procedural")
+    # Summarise a scope's episodic memories older than this many days into semantic ones (each
+    # summary closes the episodes it covers). None (default): off — a summary loses detail.
+    summarise_after_days: int | None = Field(default=None, ge=1)
+    summarise_min: int = Field(default=3, ge=2)  # episodes needed before summarising
+    # Expire memories of the types that decay (search.half_lives; episodic by default) whose search
+    # weight ((1 + boost x importance) x decay x the low-confidence factor) fell below this and
+    # that nothing retrieved for `forget_idle_days`. None (default): off.
+    forget_below: float | None = Field(default=None, gt=0)
+    forget_idle_days: int = Field(default=90, ge=1)
+    merge_prompt: str = "consolidate_merge.j2"
+    summarise_prompt: str = "consolidate_summarise.j2"
+
+    @field_validator("merge_types")
+    @classmethod
+    def _no_profile(cls, value: tuple[MemoryType, ...]) -> tuple[MemoryType, ...]:
+        if "profile" in value:
+            raise ValueError("profile memories are never merged (a new value supersedes)")
+        return value
 
 
 class RoleOverride(BaseModel):
@@ -170,3 +200,4 @@ class Settings(BaseSettings):
     search: SearchConfig = SearchConfig()
     pipeline: PipelineConfig = PipelineConfig()
     server: ServerConfig = ServerConfig()
+    maintain: MaintainConfig = MaintainConfig()

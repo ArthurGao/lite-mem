@@ -4,6 +4,7 @@ from pathlib import Path
 
 from lite_mem import eval as ev
 from lite_mem.config import Settings
+from lite_mem.errors import ModelError
 
 ROOT = Path(__file__).parents[2]
 
@@ -50,6 +51,9 @@ class _Canned:
     def reset(self, user_ids: list[str]) -> None:
         self.memory.clear()
 
+    def maintain(self, user_id: str) -> int:
+        return 0
+
 
 def test_the_run_scores_a_system_and_the_table_shows_it() -> None:
     data = ev.load(ROOT / "eval" / "dataset.json")
@@ -82,6 +86,47 @@ def test_described_settings_keep_no_credentials() -> None:
     assert described["llm"]["roles"]["resolve"]["base_url"] == "https://r.test/v1"
     assert described["embedding"]["base_url"] == "http://e.test/api"
     assert described["llm"]["model"] == settings.llm.model
+
+
+class _Merging(_Canned):
+    """Maintenance after each session keeps only the latest thing the user said."""
+
+    name = "merging"
+
+    def maintain(self, user_id: str) -> int:
+        said = self.memory.get(user_id, [])
+        closed, self.memory[user_id] = len(said[:-1]), said[-1:]
+        return closed
+
+
+def test_maintenance_runs_after_each_session_and_is_counted() -> None:
+    report = ev.run(_Merging(), ev.load(ROOT / "eval" / "dataset.json"), k=3)
+    assert report.memories == 3  # one per user at the end
+    assert report.closed == 11 - 3  # every memory but each user's last was closed
+    assert "| merging |" in ev.table([report]) and "| closed |" in ev.table([report])
+
+
+class _Flaky(_Canned):
+    """Every third write fails the way a model endpoint does (Ollama answers 500 now and then)."""
+
+    name = "flaky"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes = 0
+
+    def add(self, user_id: str, messages: list[dict[str, str]]) -> None:
+        self.writes += 1
+        if self.writes % 3 == 0:
+            raise ModelError("resolve (openai:qwen3:8b) failed: InternalServerError")
+        super().add(user_id, messages)
+
+
+def test_a_failed_call_is_counted_and_the_run_goes_on() -> None:
+    report = ev.run(_Flaky(), ev.load(ROOT / "eval" / "dataset.json"), k=3)
+    assert report.errors == 3 and len(report.add_seconds) == 11  # every session was still tried
+    assert sum("failed: InternalServerError" in m for m in report.misses) == 3
+    assert "| errors |" in ev.table([report])
 
 
 def test_a_saved_run_records_what_produced_it(tmp_path: Path) -> None:

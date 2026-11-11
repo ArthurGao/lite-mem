@@ -21,6 +21,10 @@ class Filters:
     mode: Literal["visible", "exact"] = "visible"
     include_shared: bool = False
     as_of: datetime | None = None  # None: current memories only
+    # The engine's clock for "current": a memory past its expires_at is no longer current even
+    # before `maintain` records the EXPIRE. The engine always sets it; None (the database's
+    # clock) is only for callers of a store on its own.
+    now: datetime | None = None
     types: tuple[MemoryType, ...] | None = None
     metadata: dict[str, Any] | None = None  # equality on each key
 
@@ -110,6 +114,21 @@ class Tx(Protocol):
     ) -> list[uuid.UUID]:
         """Best first. PgStore: BM25 with the namespace's statistics, equal to keyword.py's formula
         (a PG-only test checks it); any store: a ranked keyword match (design §5)."""
+        ...
+
+    def expired(self, namespace: str, now: datetime, user_id: str | None) -> list[Memory]:
+        """Current memories whose expires_at has passed (all users when `user_id` is None)."""
+        ...
+
+    def scopes(self, namespace: str, user_id: str | None) -> list[Scope]:
+        """The scopes holding current memories (one user's when `user_id` is given)."""
+        ...
+
+    def vectors(self, namespace: str, ids: list[uuid.UUID]) -> dict[uuid.UUID, list[float]]: ...
+
+    def idle(self, namespace: str, filters: Filters, before: datetime) -> list[Memory]:
+        """The memories `filters` lets through that nothing retrieved (nor created) since
+        `before`, oldest first."""
         ...
 
     def touch(self, namespace: str, ids: list[uuid.UUID], at: datetime) -> None:

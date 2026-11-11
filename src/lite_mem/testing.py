@@ -4,13 +4,16 @@ contract tests). They never touch the network or a model (AGENTS.md rule 10)."""
 import hashlib
 import math
 import re
+import uuid
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
 
 from lite_mem.config import Role
 from lite_mem.llm import Provenance
+from lite_mem.types import Memory, MemoryType, Scope
 
 # Latin words, digits, and each CJK character on its own.
 _TOKEN = re.compile(r"[a-z0-9]+|[㐀-鿿]")
@@ -74,15 +77,26 @@ class FakeLLM:
         return [role for role, _ in self.calls]
 
 
+def memory(content: str, *, type: MemoryType = "semantic", scope: Scope | None = None) -> Memory:
+    """A stored-looking memory for unit tests (no database)."""
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    return Memory(
+        id=uuid.uuid4(), scope=scope or Scope(user_id="ada"), type=type, key=None,
+        content=content, importance=0.5, confidence=0.8, valid_from=now, valid_to=None,
+        superseded_by=None, expires_at=None, source=None, metadata={}, access_count=0,
+        created_at=now, updated_at=now,
+    )  # fmt: skip
+
+
 def user_lines(payload: dict[str, Any]) -> dict[str, Any]:
     """An `extract` handler: each user message is one semantic fact, as said."""
     said = [m["content"] for m in payload["MESSAGES"] if m["role"] == "user"]
     return {"facts": [{"content": c, "type": "semantic", "importance": 0.5} for c in said]}
 
 
-def update_when(marker: str) -> Handler:
-    """A `resolve` handler: UPDATE the first existing memory when the new fact contains `marker`,
-    otherwise ADD."""
+def update_when(marker: str, remainder: str | None = None) -> Handler:
+    """A `resolve` handler: UPDATE the first existing memory when the new fact contains `marker`
+    (keeping `remainder` of it), otherwise ADD."""
 
     def decide(payload: dict[str, Any]) -> dict[str, Any]:
         if marker in payload["NEW"] and payload["EXISTING"]:
@@ -90,7 +104,8 @@ def update_when(marker: str) -> Handler:
                 "action": "UPDATE",
                 "target_id": payload["EXISTING"][0]["id"],
                 "reason": "moved",
+                "remainder": remainder,
             }
-        return {"action": "ADD", "target_id": None, "reason": "unrelated"}
+        return {"action": "ADD", "target_id": None, "reason": "unrelated", "remainder": None}
 
     return decide

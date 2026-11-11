@@ -106,6 +106,20 @@ def test_the_openai_compatible_client_sends_a_strict_schema() -> None:
     [sent] = completions.sent
     assert sent["response_format"]["json_schema"]["strict"] is True
     assert json.loads(sent["messages"][1]["content"]) == {"NEW": "x"}
+    schema = sent["response_format"]["json_schema"]["schema"]
+    # strict mode: every property required (an optional one as nullable), nothing extra
+    assert set(schema["required"]) == set(schema["properties"]) >= {"remainder"}
+    assert schema["additionalProperties"] is False
+
+
+def test_an_update_can_keep_the_part_of_the_old_fact_that_still_holds() -> None:
+    memory = _memory("lives in Wellington and works as a nurse")
+    body = json.dumps({"action": "UPDATE", "target_id": str(memory.id), "reason": "moved",
+                       "remainder": "works as a nurse"})  # fmt: skip
+    client, _ = _openai(body)
+    resolver = LlmResolver(OpenAICompatibleLLM(LLMConfig(model="m"), client))
+    resolution = resolver.resolve("moved to Auckland", [memory])
+    assert (resolution.action, resolution.remainder) == ("UPDATE", "works as a nurse")
 
 
 @pytest.mark.parametrize(

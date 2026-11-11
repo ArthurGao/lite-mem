@@ -88,6 +88,9 @@ class Mem0System:
     def reset(self, user_ids: list[str]) -> None:
         """Nothing to do: the collection is new for this run."""
 
+    def maintain(self, user_id: str) -> int:
+        return 0  # mem0 2.2.1 has no offline consolidation
+
     def close(self) -> None:
         """Drop this run's collection and history."""
         with psycopg.connect(self._url, autocommit=True) as conn:

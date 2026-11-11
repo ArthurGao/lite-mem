@@ -25,6 +25,10 @@ class Decision(BaseModel):
     action: Action
     target_id: str | None
     reason: str
+    # UPDATE / DELETE of a compound fact: the part of it that still holds, kept as its own memory
+    # ("lives in Wellington and is a nurse" → moved: "is a nurse"). Required in the schema sent
+    # to the model (strict mode); the default only spares scripted replies from naming it.
+    remainder: str | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,7 @@ class Resolution:
     target: uuid.UUID | None
     reason: str
     produced_by: str | None  # provider:model; None when code decided without a call
+    remainder: str | None = None
 
 
 class Resolver(Protocol):
@@ -49,7 +54,7 @@ class LlmResolver:
             return Resolution("ADD", None, "no related memory in this scope", None)
         payload = {
             "NEW": new,
-            "EXISTING": [{"id": str(m.id), "fact": m.content} for m in related],
+            "EXISTING": prompts.listed(related),
         }
         decision, provenance = self._llm.structured("resolve", self._prompt, payload, Decision)
         if decision.action in ("ADD", "NOOP"):
@@ -60,7 +65,8 @@ class LlmResolver:
             reason = f"model chose {decision.action} of {decision.target_id!r}, not an id; added"
             return Resolution("ADD", None, reason, provenance.tag)
         # Whether the target is among the candidates and still current: the engine decides.
-        return Resolution(decision.action, target, decision.reason, provenance.tag)
+        remainder = (decision.remainder or "").strip() or None
+        return Resolution(decision.action, target, decision.reason, provenance.tag, remainder)
 
 
 class AddOnlyResolver:

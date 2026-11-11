@@ -71,8 +71,10 @@ def _where(f: Filters) -> tuple[str, dict[str, Any]]:
     )
     when = (
         "m.valid_from <= %(as_of)s AND (m.valid_to IS NULL OR m.valid_to > %(as_of)s)"
+        " AND (m.expires_at IS NULL OR m.expires_at > %(as_of)s)"
         if f.as_of is not None
         else "m.valid_to IS NULL"
+        " AND (m.expires_at IS NULL OR m.expires_at > coalesce(%(now)s, now()))"
     )
     sql_ = f"m.namespace = %(ns)s AND (({own}){shared}) AND {when}"
     if f.types:
@@ -84,6 +86,7 @@ def _where(f: Filters) -> tuple[str, dict[str, Any]]:
         "agent_id": f.scope.agent_id,
         "session_id": f.scope.session_id,
         "as_of": f.as_of,
+        "now": f.now,
         "types": list(f.types or ()),
         "metadata": Jsonb(f.metadata or {}),
     }
@@ -240,6 +243,44 @@ class PgTx:
             b"WHERE namespace = %s AND id = %s",
             (at, superseded_by, at, namespace, memory_id),
         )
+
+    def expired(self, namespace: str, now: datetime, user_id: str | None) -> list[Memory]:
+        rows = self._conn.execute(
+            f"SELECT {_COLUMNS} FROM memories WHERE namespace = %s AND valid_to IS NULL "
+            "AND expires_at <= %s AND (%s::text IS NULL OR user_id = %s) "
+            "ORDER BY expires_at, id".encode(),
+            (namespace, now, user_id, user_id),
+        ).fetchall()
+        return [_memory(r) for r in rows]
+
+    def scopes(self, namespace: str, user_id: str | None) -> list[Scope]:
+        rows = self._conn.execute(
+            b"SELECT DISTINCT user_id, agent_id, session_id FROM memories "
+            b"WHERE namespace = %s AND valid_to IS NULL AND (%s::text IS NULL OR user_id = %s) "
+            b"ORDER BY user_id NULLS FIRST, agent_id NULLS FIRST, session_id NULLS FIRST",
+            (namespace, user_id, user_id),
+        ).fetchall()
+        return [Scope(r["user_id"], r["agent_id"], r["session_id"]) for r in rows]
+
+    def vectors(self, namespace: str, ids: list[uuid.UUID]) -> dict[uuid.UUID, list[float]]:
+        rows = self._conn.execute(
+            sql.SQL(
+                "SELECT memory_id, embedding::real[] AS vector FROM {} "
+                "WHERE namespace = %s AND memory_id = ANY(%s)"
+            ).format(_vectors(self._dim(namespace))),
+            (namespace, ids),
+        ).fetchall()
+        return {r["memory_id"]: list(r["vector"]) for r in rows}
+
+    def idle(self, namespace: str, filters: Filters, before: datetime) -> list[Memory]:
+        where, params = _where(filters)
+        rows = self._conn.execute(
+            f"SELECT {_COLUMNS} FROM memories m WHERE {where} "
+            "AND coalesce(m.last_accessed_at, m.valid_from) < %(before)s "
+            "ORDER BY valid_from, id".encode(),
+            {**params, "ns": namespace, "before": before},
+        ).fetchall()
+        return [_memory(r) for r in rows]
 
     def set_content(self, namespace: str, memory_id: uuid.UUID, content: str, at: datetime) -> None:
         self._conn.execute(

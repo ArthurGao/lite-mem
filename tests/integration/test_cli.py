@@ -171,3 +171,19 @@ def test_serve_refuses_a_public_address_without_keys(monkeypatch: pytest.MonkeyP
     ok = CliRunner().invoke(app, ["serve"])
     assert ok.exit_code == 0, ok.output
     assert (started[0]["host"], started[0]["port"]) == ("127.0.0.1", 8710)
+
+
+def test_maintain_prints_what_it_changed(cli: CliRunner, store: PgStore) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from lite_mem.engine import MemoryEngine
+    from lite_mem.testing import FakeEmbedder
+    from lite_mem.types import Fact, Scope
+
+    now = datetime.now(UTC)  # the CLI's engine runs on the real clock: write it two hours ago
+    earlier = MemoryEngine(store, "app", FakeEmbedder(), clock=lambda: now - timedelta(hours=2))
+    gone = now - timedelta(hours=1)
+    earlier.remember(Fact("parked on level 3", expires_at=gone), Scope(user_id="ada"))
+    result = cli.invoke(app, ["maintain", "--user", "ada"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {"expired": 1, "merged": 0, "summarised": 0, "forgotten": 0}
