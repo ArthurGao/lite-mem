@@ -135,7 +135,9 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
   - 置信度：低于 0.5 的乘以 0.8。
 - 过滤：scope（自己的，加上共享的）、类型、metadata 等值，`as_of`（某个时刻生效的版本）。
 - 结果 `MemoryHit(id, content, type, score, rel, scope, valid_from, valid_to)`。分数只在 lite-mem 内部可比。
-- 冲突消解用的"相关记忆"也走同一条检索，只是限定在**完全相同的 scope**内，并且只取当前生效的记忆。
+- 冲突消解用的"相关记忆"也走同一条检索，只是限定在**完全相同的 scope**内，并且只取当前生效的记忆。过滤条件有两种模式：`visible`（这个 scope 能看到的：自己的、没指定 session 时含它的所有 session、可选含共享）和 `exact`（恰好这个 scope，session 也要一致，不含共享）。
+- 向量检索在过滤后的行上精确计算距离（先物化该 scope 可见的行，再算余弦），返回 (id, 相似度)；按 scope 检索时一个 scope 只有千级记忆，精确算很便宜，也不会因为别的 scope 有更近的向量而漏召回。HNSW 索引留给以后不按 scope 的查询。
+- BM25 的契约：PgStore 和 `keyword.py` 的公式逐项相等（只在 PG 上测）；其他后端（S7b 的 SQLite/FTS5）只需要是"有排序的关键词匹配"，共享的合约测试只查排序性质。
 
 ## 6. 整合与遗忘（S7）
 
@@ -271,6 +273,9 @@ lite-mem/
   - /simplify 后：操作命名定为 ADD / CORRECT / SUPERSEDE / DELETE（冲突消解的 UPDATE 决定落成 SUPERSEDE，S9 映射跟着改）；所有写操作走一个 `_apply`，都带 `produced_by`，S3 只需在这里加向量和倒排；幂等先只读查（`replay`），再在事务里认领，S4 重试就不会再调模型；`superseded_by` 加索引；`current_profile` 的条件和唯一索引的表达式一致、列表查询按字段拼条件，能用上索引；`history` 一次查询；事件序列化交给 pydantic；`MEMORY_TYPES` 从 Literal 推出。没做：一次写入多条时的往返合并（pipeline、批量插入）——批次小，等 eval 量出瓶颈再做；只读查询不开事务；`Fact` 改用 pydantic 校验；`last_accessed_at` 留给 S3（检索命中时更新）。
   - Codex：High 幂等键被另一个用户复用会拿到前一个用户的结果——改为拒绝（Conflict）；High 同一 profile key 第一次并发写会撞唯一索引——按 (namespace, scope, key) 加事务级 advisory lock；Medium 空字符串和 NULL 在唯一索引里相同——拒绝空的 scope id；Medium `as_of` 看到更正后的措辞——按设计（更正追溯生效，见 §4），写进文档。每条修复都先有失败的测试，并做了变异检查。
   - 自己发现的：取代时先关旧行（腾出唯一的"当前值"位置）再插新行，`superseded_by` 外键要延迟到提交时检查（`DEFERRABLE INITIALLY DEFERRED`）。
+- **S3（2026-11-12）**：迁移 0003（倒排 `memory_postings`、`memories.terms`；每个维度一张向量表，绑定 namespace 时建）；jieba 分词与 BM25（SQL 里算，和公式逐项相等）、RRF、按重要性、类型半衰期、置信度加权；`Filters`（scope、共享、类型、metadata、`as_of`）；Ollama 和 OpenAI 兼容两种 embedder；写入时向量在事务外算好，倒排和向量与记忆行同一个事务；检索命中计数。`-m ollama` 真实往返通过（含中文问、英文记忆的跨语言查询）。
+  - /simplify 后：`Filters` 加 `exact` 模式（S4 用）；检索拆出内部的 `_rank`（S4 复用，不算访问、不重复 embedding）；向量检索返回相似度（S7 合并用）；已带向量的操作不再重算；更正只校验一次；维度缓存放在 `PgStore`；向量用 `float8[]::vector` 传；建向量表前先查是否已存在（避免每次构造引擎都跑 DDL）。没做：BM25 统计每次查询现算（十万级以上再加缓存）；检索时的命中计数是一次写（每秒数百次检索时再改成批量）；一次检索 4–5 次往返、一次写入每条记忆约 4 次往返（批量导入或远程库时再合并）；OpenAI embedder 改用官方 SDK（两种 embedder 共用一套 HTTP 代码更简单）；半衰期的 key 用 `MemoryType` 类型（只是外观）。
+  - Codex：P1 带过滤的 HNSW 检索在别的 scope 有大量更近向量时可能漏召回——改为在 scope 内精确检索，正确性不再取决于规划器；回归测试在本地没能复现出原问题（scope 窄时规划器本来就走精确路径），如实记录；P2 半衰期可以是 0 或负数——改为必须大于 0（先红后绿）。
 
 ## 13. 待确认
 

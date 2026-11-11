@@ -92,6 +92,20 @@ class LLMConfig(BaseModel):
         )
 
 
+class SearchConfig(BaseModel):
+    """Hybrid search and its weights (design §5). Scores are only comparable within lite-mem."""
+
+    candidates: int = Field(default=50, ge=1, le=1000)  # per list, before fusion
+    rrf_k: int = Field(default=60, ge=1)
+    importance_boost: float = Field(default=0.3, ge=0)  # weight * (1 + boost * importance)
+    # Half-life in days per memory type; a type not listed does not decay.
+    half_lives: dict[str, Annotated[float, Field(gt=0)]] = Field(
+        default_factory=lambda: {"episodic": 30.0}
+    )
+    low_confidence: float = Field(default=0.5, ge=0, le=1)
+    low_confidence_factor: float = Field(default=0.8, ge=0, le=1)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="LITEMEM_",
@@ -107,3 +121,4 @@ class Settings(BaseSettings):
     namespace: Namespace | None = None  # required by the engine (design §4)
     embedding: EmbeddingConfig = EmbeddingConfig()
     llm: LLMConfig = LLMConfig()
+    search: SearchConfig = SearchConfig()

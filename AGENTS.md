@@ -24,7 +24,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S3 — search** (design §12). S0–S2 done 2026-11-12.
+**S4 — extraction and conflict resolution** (design §12). S0–S3 done 2026-11-12.
 
 ## Rules
 

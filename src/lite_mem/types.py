@@ -85,3 +85,12 @@ class HistoryEntry:
     reason: str | None
     produced_by: str | None
     at: datetime
+
+
+@dataclass(frozen=True)
+class MemoryHit:
+    """One search result. `score` is only comparable within one search of lite-mem."""
+
+    memory: Memory
+    score: float  # relevance x weight
+    relevance: float  # fused (RRF) relevance, before the weights

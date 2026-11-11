@@ -3,10 +3,26 @@ write's row, index entries and history commit together or not at all."""
 
 import uuid
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from lite_mem.types import EventOp, HistoryEntry, Memory, MemoryType, Scope
+
+
+@dataclass(frozen=True)
+class Filters:
+    """Which memories a read may return (design §5)."""
+
+    scope: Scope
+    # "visible": what the scope can see (its own rows, any of its sessions when no session is
+    # given, plus the namespace's shared rows when include_shared). "exact": rows of exactly
+    # this scope (session included, NULL matching NULL), never shared ones.
+    mode: Literal["visible", "exact"] = "visible"
+    include_shared: bool = False
+    as_of: datetime | None = None  # None: current memories only
+    types: tuple[MemoryType, ...] | None = None
+    metadata: dict[str, Any] | None = None  # equality on each key
 
 
 class Tx(Protocol):
@@ -72,15 +88,33 @@ class Tx(Protocol):
         at: datetime,
     ) -> None: ...
 
-    def list_memories(
-        self,
-        namespace: str,
-        scope: Scope,
-        *,
-        include_shared: bool,
-        as_of: datetime | None,
-        types: tuple[MemoryType, ...] | None,
-    ) -> list[Memory]: ...
+    def list_memories(self, namespace: str, filters: Filters) -> list[Memory]: ...
+
+    def get_memories(self, namespace: str, ids: list[uuid.UUID]) -> list[Memory]: ...
+
+    def index_memory(
+        self, namespace: str, memory_id: uuid.UUID, content: str, vector: list[float]
+    ) -> None:
+        """(Re)build the memory's search entries — its vector and its text index — in this
+        transaction, so they commit with the row (design §4)."""
+        ...
+
+    def vector_search(
+        self, namespace: str, vector: list[float], filters: Filters, limit: int
+    ) -> list[tuple[uuid.UUID, float]]:
+        """(id, cosine similarity), nearest first, exact among the rows `filters` lets through."""
+        ...
+
+    def text_search(
+        self, namespace: str, query: str, filters: Filters, limit: int
+    ) -> list[uuid.UUID]:
+        """Best first. PgStore: BM25 with the namespace's statistics, equal to keyword.py's formula
+        (a PG-only test checks it); any store: a ranked keyword match (design §5)."""
+        ...
+
+    def touch(self, namespace: str, ids: list[uuid.UUID], at: datetime) -> None:
+        """Count a retrieval of these memories (access_count, last_accessed_at)."""
+        ...
 
     def history(self, namespace: str, memory_id: uuid.UUID) -> list[HistoryEntry]: ...
 

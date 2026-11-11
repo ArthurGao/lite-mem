@@ -12,24 +12,27 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
-from lite_mem.config import Namespace
+from lite_mem.config import Namespace, SearchConfig
 from lite_mem.embedding import Embedder
 from lite_mem.errors import Conflict, InvalidRequest, NotFound
+from lite_mem.fusion import rrf
 from lite_mem.ids import uuid7
-from lite_mem.stores.base import Store, Tx
+from lite_mem.keyword import TOKENIZER
+from lite_mem.stores.base import Filters, Store, Tx
 from lite_mem.types import (
     MEMORY_TYPES,
     Fact,
     HistoryEntry,
     Memory,
     MemoryEvent,
+    MemoryHit,
     MemoryType,
     Message,
     Scope,
 )
 
-TOKENIZER = "jieba-0.42.1"  # what the BM25 postings are built with (bound per namespace)
 MAX_FACT_CHARS = 2000
+MAX_TOP_K = 100
 
 Clock = Callable[[], datetime]
 _EVENTS = TypeAdapter(list[MemoryEvent])  # idempotency results, stored as JSON
@@ -47,12 +50,14 @@ def _utcnow() -> datetime:
 class Add:
     fact: Fact
     replaces: uuid.UUID | None = None
+    vector: list[float] | None = None  # set by _write, before the transaction opens
 
 
 @dataclasses.dataclass(frozen=True)
 class Correct:
     memory_id: uuid.UUID
     content: str
+    vector: list[float] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -70,6 +75,7 @@ class MemoryEngine:
         namespace: str,
         embedder: Embedder,
         *,
+        search: SearchConfig | None = None,
         clock: Clock = _utcnow,
     ) -> None:
         try:
@@ -78,6 +84,7 @@ class MemoryEngine:
             raise InvalidRequest(f"invalid namespace {namespace!r}") from exc
         self._store = store
         self._embedder = embedder
+        self._search = search or SearchConfig()
         self._now = clock
         with store.transaction() as tx:
             tx.bind_namespace(
@@ -165,14 +172,61 @@ class MemoryEngine:
         types: Sequence[MemoryType] | None = None,
     ) -> list[Memory]:
         """The scope's current memories, or those in effect at `as_of`."""
-        _check_scope(scope)
-        kinds = tuple(types) if types else None
-        if kinds and any(t not in MEMORY_TYPES for t in kinds):
-            raise InvalidRequest(f"types must be among {MEMORY_TYPES}")
+        filters = _filters(scope, include_shared, as_of, types, None)
         with self._store.transaction() as tx:
-            return tx.list_memories(
-                self._ns, scope, include_shared=include_shared, as_of=as_of, types=kinds
-            )
+            return tx.list_memories(self._ns, filters)
+
+    def search(
+        self,
+        query: str,
+        scope: Scope,
+        *,
+        top_k: int = 10,
+        include_shared: bool = True,
+        types: Sequence[MemoryType] | None = None,
+        metadata: dict[str, Any] | None = None,
+        as_of: datetime | None = None,
+    ) -> list[MemoryHit]:
+        """The memories that answer `query`, best first (design §5): vector and BM25 candidates
+        fused by RRF, then weighted by importance, age (per type) and confidence."""
+        if not query.strip():
+            raise InvalidRequest("search needs a query")
+        if not 1 <= top_k <= MAX_TOP_K:
+            raise InvalidRequest(f"top_k must be between 1 and {MAX_TOP_K}")
+        filters = _filters(scope, include_shared, as_of, types, metadata)
+        [vector] = self._embedder.embed([query])  # before the transaction: a model call
+        with self._store.transaction() as tx:
+            hits = self._rank(tx, query, vector, filters, top_k)
+            tx.touch(self._ns, [h.memory.id for h in hits], self._now())  # a caller's retrieval
+        return hits
+
+    def _rank(
+        self, tx: Tx, query: str, vector: list[float], filters: Filters, top_k: int
+    ) -> list[MemoryHit]:
+        """Hybrid ranking inside `tx` with a vector already computed: vector and BM25 candidates,
+        RRF, then the weights. Internal lookups (related memories, S4) use it without counting
+        an access."""
+        cfg, now = self._search, self._now()
+        by_vector = [i for i, _ in tx.vector_search(self._ns, vector, filters, cfg.candidates)]
+        by_text = tx.text_search(self._ns, query, filters, cfg.candidates)
+        relevance = rrf([by_vector, by_text], k=cfg.rrf_k)
+        found = tx.get_memories(self._ns, list(relevance))
+        hits = (
+            MemoryHit(m, relevance[m.id] * self._weight(m, now), relevance[m.id]) for m in found
+        )
+        return sorted(hits, key=lambda h: (-round(h.score, 12), h.memory.id))[:top_k]
+
+    def _weight(self, memory: Memory, now: datetime) -> float:
+        """Importance x decay (by the type's half-life) x confidence (design §5)."""
+        cfg = self._search
+        weight = 1 + cfg.importance_boost * memory.importance
+        half_life = cfg.half_lives.get(memory.type)
+        if half_life:
+            age_days = max((now - memory.valid_from).total_seconds(), 0) / 86400
+            weight *= 0.5 ** (age_days / half_life)
+        if memory.confidence < cfg.low_confidence:
+            weight *= cfg.low_confidence_factor
+        return weight
 
     def history(self, memory_id: uuid.UUID) -> list[HistoryEntry]:
         """Every change to the memory, oldest first (each memory has at least its ADD)."""
@@ -201,6 +255,7 @@ class MemoryEngine:
             replay = self.replay(idempotency_key, scope)
             if replay is not None:
                 return replay
+        checked = self._embedded(checked)  # model calls stay outside the transaction
         with self._store.transaction() as tx:
             if idempotency_key is not None:
                 held = tx.claim_idempotency(self._ns, idempotency_key, scope.user_id)
@@ -225,10 +280,24 @@ class MemoryEngine:
             raise Conflict(f"idempotency key {key!r} was already used for another scope")
         return _EVENTS.validate_python(result)
 
+    def _embedded(self, ops: Sequence[Op]) -> list[Op]:
+        """The ops with the vectors their new text needs, from one batch call (an op that already
+        carries one keeps it)."""
+        todo: list[Add | Correct] = [
+            op for op in ops if not isinstance(op, Retire) and op.vector is None
+        ]
+        texts = [op.fact.content if isinstance(op, Add) else op.content for op in todo]
+        vectors = iter(self._embedder.embed(texts) if texts else [])
+        done: dict[int, Op] = {id(op): dataclasses.replace(op, vector=next(vectors)) for op in todo}
+        return [done.get(id(op), op) for op in ops]
+
     def _change(self, op: Correct | Retire, reason: str | None, produced_by: str | None) -> Memory:
+        if isinstance(op, Correct):
+            op = dataclasses.replace(op, content=_content(op.content))
+        [ready] = self._embedded([op])
         with self._store.transaction() as tx:
             current = self._current(tx, op.memory_id)
-            self._apply(tx, current.scope, op, produced_by, reason)
+            self._apply(tx, current.scope, ready, produced_by, reason)
             return self._existing(tx, op.memory_id)
 
     def _apply(
@@ -238,8 +307,10 @@ class MemoryEngine:
         now = self._now()
         if isinstance(op, Correct):
             memory = self._current(tx, op.memory_id)
-            content = _content(op.content)
+            content = op.content  # checked by _change
+            assert op.vector is not None  # _write / _change embed every op before applying it
             tx.set_content(self._ns, memory.id, content, now)
+            tx.index_memory(self._ns, memory.id, content, op.vector)
             self._event(tx, memory, "CORRECT", {"content": memory.content}, {"content": content},
                         reason, produced_by, now)  # fmt: skip
             return MemoryEvent("CORRECT", memory.id, content, reason, produced_by)
@@ -266,6 +337,8 @@ class MemoryEngine:
         if replaced is not None:  # close the old row first: it frees the key's current slot
             tx.close_memory(self._ns, replaced.id, now, superseded_by=memory.id)
         tx.insert_memory(self._ns, memory)
+        assert op.vector is not None
+        tx.index_memory(self._ns, memory.id, memory.content, op.vector)
         after = {"content": memory.content, "type": memory.type, "key": memory.key}
         self._event(tx, memory, "ADD", None, after, reason, produced_by, now)
         if replaced is None:
@@ -315,6 +388,24 @@ def _content(text: str) -> str:
     if len(content) > MAX_FACT_CHARS:
         raise InvalidRequest(f"a memory is at most {MAX_FACT_CHARS} characters")
     return content
+
+
+def _filters(
+    scope: Scope,
+    include_shared: bool,
+    as_of: datetime | None,
+    types: Sequence[MemoryType] | None,
+    metadata: dict[str, Any] | None,
+) -> Filters:
+    _check_scope(scope)
+    kinds = tuple(types) if types else None
+    if kinds and any(t not in MEMORY_TYPES for t in kinds):
+        raise InvalidRequest(f"types must be among {MEMORY_TYPES}")
+    if metadata and not all(isinstance(k, str) for k in metadata):
+        raise InvalidRequest("metadata filter keys must be strings")
+    return Filters(
+        scope, include_shared=include_shared, as_of=as_of, types=kinds, metadata=metadata or None
+    )
 
 
 def _check_scope(scope: Scope) -> None:

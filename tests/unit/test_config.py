@@ -75,3 +75,11 @@ def test_a_shared_or_system_schema_is_refused(reserved: str) -> None:
 def test_the_schema_comes_from_its_own_variable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LITEMEM_DB_SCHEMA", "elsewhere")
     assert Settings(_env_file=None).db_schema == "elsewhere"  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("bad", [0, -30])
+def test_a_half_life_must_be_positive(bad: float) -> None:
+    from lite_mem.config import SearchConfig
+
+    with pytest.raises(ValidationError, match="half"):
+        SearchConfig(half_lives={"episodic": bad})

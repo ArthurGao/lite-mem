@@ -15,8 +15,12 @@ from psycopg_pool import ConnectionPool
 
 from lite_mem.config import own_schema
 from lite_mem.db import require_url
-from lite_mem.errors import Conflict, StoreError
-from lite_mem.types import EventOp, HistoryEntry, Memory, MemoryType, Scope
+from lite_mem.errors import ConfigError, Conflict, StoreError
+from lite_mem.keyword import K1, B, term_counts, terms
+from lite_mem.stores.base import Filters
+from lite_mem.types import EventOp, HistoryEntry, Memory, Scope
+
+MAX_DIM = 2000  # pgvector's HNSW limit for `vector`
 
 _COLUMNS = (
     "id, user_id, agent_id, session_id, type, key, content, importance, confidence, valid_from, "
@@ -50,9 +54,57 @@ def _memory(row: dict[str, Any]) -> Memory:
     )
 
 
+def _where(f: Filters) -> tuple[str, dict[str, Any]]:
+    """The SQL condition on `memories m` and its parameters for `f` (plain predicates the planner
+    can index)."""
+    fields = [("user_id", f.scope.user_id), ("agent_id", f.scope.agent_id)]
+    if f.mode == "exact" or f.scope.session_id is not None:
+        fields.append(("session_id", f.scope.session_id))
+    own = " AND ".join(
+        f"m.{column} = %({column})s" if value is not None else f"m.{column} IS NULL"
+        for column, value in fields
+    )
+    shared = (
+        " OR (m.user_id IS NULL AND m.agent_id IS NULL)"
+        if f.include_shared and f.mode == "visible"
+        else ""
+    )
+    when = (
+        "m.valid_from <= %(as_of)s AND (m.valid_to IS NULL OR m.valid_to > %(as_of)s)"
+        if f.as_of is not None
+        else "m.valid_to IS NULL"
+    )
+    sql_ = f"m.namespace = %(ns)s AND (({own}){shared}) AND {when}"
+    if f.types:
+        sql_ += " AND m.type = ANY(%(types)s)"
+    if f.metadata:
+        sql_ += " AND m.metadata @> %(metadata)s"
+    return sql_, {
+        "user_id": f.scope.user_id,
+        "agent_id": f.scope.agent_id,
+        "session_id": f.scope.session_id,
+        "as_of": f.as_of,
+        "types": list(f.types or ()),
+        "metadata": Jsonb(f.metadata or {}),
+    }
+
+
+def _vectors(dim: int) -> sql.Identifier:
+    return sql.Identifier(f"memory_vectors_{dim}")
+
+
 class PgTx:
-    def __init__(self, conn: psycopg.Connection[dict[str, Any]]) -> None:
+    def __init__(self, conn: psycopg.Connection[dict[str, Any]], dims: dict[str, int]) -> None:
         self._conn = conn
+        self._dims = dims  # namespace -> dim: the store's cache (fixed once a namespace is bound)
+
+    def _dim(self, namespace: str) -> int:
+        if namespace not in self._dims:
+            row = self._one("SELECT dim FROM namespaces WHERE name = %s", (namespace,))
+            if row is None:
+                raise StoreError(f"namespace {namespace!r} is not bound")
+            self._dims[namespace] = row["dim"]
+        return self._dims[namespace]
 
     def _one(self, query: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
         return self._conn.execute(query.encode(), params).fetchone()
@@ -84,6 +136,26 @@ class PgTx:
                 f"namespace {namespace!r} was built with another index configuration: {said}; "
                 "open it with that configuration, or use a new namespace"
             )
+        if dim > MAX_DIM:
+            raise ConfigError(f"embedding dim {dim} is over pgvector's HNSW limit ({MAX_DIM})")
+        self._dims[namespace] = dim
+        table = _vectors(dim)
+        exists = self._one("SELECT to_regclass(%s) AS t", (f"memory_vectors_{dim}",))
+        if exists and exists["t"] is not None:
+            return  # the usual case: no DDL, no lock
+        # One vector table per dimension; serialise its creation across concurrent first binds.
+        self._conn.execute(b"SELECT pg_advisory_xact_lock(hashtext(%s))", (f"vectors:{dim}",))
+        self._conn.execute(
+            sql.SQL(
+                "CREATE TABLE IF NOT EXISTS {} (memory_id uuid PRIMARY KEY REFERENCES memories (id)"
+                " ON DELETE CASCADE, namespace text NOT NULL, embedding vector({}) NOT NULL)"
+            ).format(table, sql.Literal(dim))
+        )
+        self._conn.execute(
+            sql.SQL(
+                "CREATE INDEX IF NOT EXISTS {} ON {} USING hnsw (embedding vector_cosine_ops)"
+            ).format(sql.Identifier(f"memory_vectors_{dim}_hnsw"), table)
+        )
 
     def lookup_idempotency(self, namespace: str, key: str) -> tuple[str | None, Any] | None:
         row = self._one(
@@ -204,44 +276,109 @@ class PgTx:
             ),
         )
 
-    def list_memories(
-        self,
-        namespace: str,
-        scope: Scope,
-        *,
-        include_shared: bool,
-        as_of: datetime | None,
-        types: tuple[MemoryType, ...] | None,
-    ) -> list[Memory]:
-        # Plain predicates per field (no "x IS NOT DISTINCT FROM y" or "%s IS NULL OR …"), so
-        # the planner can use the scope indexes.
-        own = " AND ".join(
-            f"{column} = %({column})s" if value is not None else f"{column} IS NULL"
-            for column, value in (("user_id", scope.user_id), ("agent_id", scope.agent_id))
-        )
-        if scope.session_id is not None:
-            own += " AND session_id = %(session_id)s"
-        own = f"({own})"
-        shared = " OR (user_id IS NULL AND agent_id IS NULL)" if include_shared else ""
-        when = (
-            "valid_from <= %(at)s AND (valid_to IS NULL OR valid_to > %(at)s)"
-            if as_of is not None
-            else "valid_to IS NULL"
-        )
-        kinds = " AND type = ANY(%(types)s)" if types else ""
+    def list_memories(self, namespace: str, filters: Filters) -> list[Memory]:
+        where, params = _where(filters)
         rows = self._conn.execute(
-            f"SELECT {_COLUMNS} FROM memories WHERE namespace = %(ns)s AND ({own}{shared}) "
-            f"AND {when}{kinds} ORDER BY valid_from, id".encode(),
-            {
-                "ns": namespace,
-                "user_id": scope.user_id,
-                "agent_id": scope.agent_id,
-                "session_id": scope.session_id,
-                "at": as_of,
-                "types": list(types or ()),
-            },
+            f"SELECT {_COLUMNS} FROM memories m WHERE {where} ORDER BY valid_from, id".encode(),
+            {**params, "ns": namespace},
         ).fetchall()
         return [_memory(r) for r in rows]
+
+    def get_memories(self, namespace: str, ids: list[uuid.UUID]) -> list[Memory]:
+        rows = self._conn.execute(
+            f"SELECT {_COLUMNS} FROM memories WHERE namespace = %s AND id = ANY(%s)".encode(),
+            (namespace, ids),
+        ).fetchall()
+        return [_memory(r) for r in rows]
+
+    def index_memory(
+        self, namespace: str, memory_id: uuid.UUID, content: str, vector: list[float]
+    ) -> None:
+        dim = self._dim(namespace)
+        if len(vector) != dim:
+            raise StoreError(f"namespace {namespace!r} holds {dim}-d vectors, got {len(vector)}")
+        counts = term_counts(content)
+        self._conn.execute(b"DELETE FROM memory_postings WHERE memory_id = %s", (memory_id,))
+        with self._conn.cursor() as cur:
+            cur.executemany(
+                b"INSERT INTO memory_postings (namespace, memory_id, term, tf) "
+                b"VALUES (%s, %s, %s, %s)",
+                [(namespace, memory_id, term, tf) for term, tf in counts.items()],
+            )
+        self._conn.execute(
+            b"UPDATE memories SET terms = %s WHERE id = %s", (sum(counts.values()), memory_id)
+        )
+        self._conn.execute(
+            sql.SQL(
+                "INSERT INTO {} (memory_id, namespace, embedding) "
+                "VALUES (%s, %s, %s::float8[]::vector) "
+                "ON CONFLICT (memory_id) DO UPDATE SET embedding = EXCLUDED.embedding"
+            ).format(_vectors(dim)),
+            (memory_id, namespace, vector),
+        )
+
+    def vector_search(
+        self, namespace: str, vector: list[float], filters: Filters, limit: int
+    ) -> list[tuple[uuid.UUID, float]]:
+        where, params = _where(filters)
+        # Exact among the rows the filter lets through: first those rows, then their distances.
+        # An HNSW scan filtered after the join can run out of candidates when many nearer
+        # vectors belong to other scopes; a scope holds thousands of memories, cheap to rank.
+        rows = self._conn.execute(
+            sql.SQL(
+                "WITH visible AS MATERIALIZED (SELECT m.id FROM memories m WHERE {}) "
+                "SELECT v.memory_id AS id, 1 - (v.embedding <=> %(q)s::float8[]::vector) AS sim "
+                "FROM visible JOIN {} v ON v.memory_id = visible.id "
+                "ORDER BY v.embedding <=> %(q)s::float8[]::vector, v.memory_id LIMIT %(limit)s"
+            ).format(sql.SQL(where), _vectors(self._dim(namespace))),
+            {**params, "ns": namespace, "q": vector, "limit": limit},
+        ).fetchall()
+        return [(r["id"], float(r["sim"])) for r in rows]
+
+    def text_search(
+        self, namespace: str, query: str, filters: Filters, limit: int
+    ) -> list[uuid.UUID]:
+        wanted = sorted(set(terms(query)))
+        if not wanted:
+            return []
+        where, params = _where(filters)
+        # N, avgdl and n(t) are the namespace's current memories' (keyword.py has the formula).
+        rows = self._conn.execute(
+            f"""
+            WITH cur AS (SELECT id, terms FROM memories
+                         WHERE namespace = %(ns)s AND valid_to IS NULL),
+                 stats AS (SELECT count(*) AS n, coalesce(avg(terms), 0) AS avgdl FROM cur),
+                 df AS (SELECT p.term, count(*) AS df FROM memory_postings p
+                        JOIN cur ON cur.id = p.memory_id
+                        WHERE p.namespace = %(ns)s AND p.term = ANY(%(terms)s) GROUP BY p.term)
+            SELECT id FROM (
+                SELECT m.id, sum(
+                           ln(1 + (stats.n - df.df + 0.5) / (df.df + 0.5))
+                           * p.tf * (%(k1)s + 1)
+                           / (p.tf + %(k1)s * (1 - %(b)s + %(b)s * m.terms
+                                               / nullif(stats.avgdl, 0)))
+                       ) AS score
+                FROM memory_postings p
+                JOIN memories m ON m.id = p.memory_id
+                JOIN df ON df.term = p.term
+                CROSS JOIN stats
+                WHERE p.namespace = %(ns)s AND p.term = ANY(%(terms)s) AND {where}
+                GROUP BY m.id
+            ) scored
+            ORDER BY round(score::numeric, 9) DESC, id
+            LIMIT %(limit)s
+            """.encode(),
+            {**params, "ns": namespace, "terms": wanted, "k1": K1, "b": B, "limit": limit},
+        ).fetchall()
+        return [r["id"] for r in rows]
+
+    def touch(self, namespace: str, ids: list[uuid.UUID], at: datetime) -> None:
+        if ids:
+            self._conn.execute(
+                b"UPDATE memories SET access_count = access_count + 1, last_accessed_at = %s "
+                b"WHERE namespace = %s AND id = ANY(%s)",
+                (at, namespace, ids),
+            )
 
     def history(self, namespace: str, memory_id: uuid.UUID) -> list[HistoryEntry]:
         rows = self._conn.execute(
@@ -270,6 +407,7 @@ class PgTx:
 class PgStore:
     def __init__(self, database_url: str | None, schema: str, *, max_size: int = 4) -> None:
         own_schema(schema)
+        self._dims: dict[str, int] = {}
 
         def configure(conn: psycopg.Connection[dict[str, Any]]) -> None:
             conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema)))
@@ -291,7 +429,7 @@ class PgStore:
     def transaction(self) -> Iterator[PgTx]:
         try:
             with self._pool.connection() as conn, conn.transaction():
-                yield PgTx(conn)
+                yield PgTx(conn, self._dims)
         except psycopg.OperationalError as exc:
             raise StoreError(f"PostgreSQL failed: {exc}") from exc
 
