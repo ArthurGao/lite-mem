@@ -360,3 +360,36 @@ def test_an_invalid_name_leaves_no_lock_behind(components: Components) -> None:
     assert engines._locks == {}
     engines("app")
     assert list(engines._locks) == ["app"]
+
+
+def test_concurrent_opens_cannot_pass_the_limit(components: Components) -> None:
+    """Security review of S8b: the limit counted only finished opens, so several new names opened
+    at once all passed the check before any finished."""
+    import threading
+    import time
+
+    from lite_mem.errors import Refused
+    from lite_mem.factory import Engines
+
+    class Slow(Components):
+        def engine(self, namespace: str) -> Any:
+            time.sleep(0.2)  # every thread reaches the check before any open finishes
+            return super().engine(namespace)
+
+    slow = Slow(components.store, components.embedder, components.extractor, components.resolver)
+    engines = Engines(slow, max_namespaces=2)
+    outcome: dict[str, str] = {}
+
+    def open_one(name: str) -> None:
+        try:
+            engines(name)
+            outcome[name] = "opened"
+        except Refused:
+            outcome[name] = "refused"
+
+    threads = [threading.Thread(target=open_one, args=(f"ns-{n}",)) for n in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(outcome.values()) == ["opened"] * 2 + ["refused"] * 3

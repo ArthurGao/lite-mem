@@ -75,6 +75,7 @@ class Engines:
         self.components = components
         self._max = max_namespaces
         self._built: dict[str, MemoryEngine] = {}
+        self._opening: dict[str, int] = {}  # namespace -> callers opening it now
         self._locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
         self._guard = threading.Lock()  # for _locks and the count
 
@@ -83,14 +84,24 @@ class Engines:
         if found is not None:
             return found
         valid_namespace(namespace)  # before any lock: an invalid name leaves no trace
-        with self._guard:  # only engines that opened count: a failed open takes no slot
-            if self._max is not None and len(self._built) >= self._max:
+        with self._guard:
+            # Opened and opening both count, so names opened at once cannot pass the limit
+            # together; a failed open gives its slot back.
+            new = namespace not in self._opening and namespace not in self._built
+            if new and self._max is not None and len(self._built) + len(self._opening) >= self._max:
                 raise Refused(f"this service opens at most {self._max} namespaces")
+            self._opening[namespace] = self._opening.get(namespace, 0) + 1
             lock = self._locks[namespace]  # never removed: a waiter always shares it
-        with lock:
-            if namespace not in self._built:
-                self._built[namespace] = self.components.engine(namespace)
-            return self._built[namespace]
+        try:
+            with lock:
+                if namespace not in self._built:
+                    self._built[namespace] = self.components.engine(namespace)
+                return self._built[namespace]
+        finally:
+            with self._guard:
+                self._opening[namespace] -= 1
+                if not self._opening[namespace]:
+                    del self._opening[namespace]
 
 
 def open_components(
