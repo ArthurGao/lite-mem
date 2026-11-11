@@ -14,10 +14,12 @@ from pydantic import TypeAdapter, ValidationError
 
 from lite_mem.config import Namespace, SearchConfig
 from lite_mem.embedding import Embedder
-from lite_mem.errors import Conflict, InvalidRequest, NotFound
+from lite_mem.errors import ConfigError, Conflict, InvalidRequest, NotFound
+from lite_mem.extract import Extractor
 from lite_mem.fusion import rrf
 from lite_mem.ids import uuid7
 from lite_mem.keyword import TOKENIZER
+from lite_mem.resolve import Resolver
 from lite_mem.stores.base import Filters, Store, Tx
 from lite_mem.types import (
     MEMORY_TYPES,
@@ -68,6 +70,27 @@ class Retire:
 Op = Add | Correct | Retire
 
 
+@dataclasses.dataclass(eq=False)
+class _Step:
+    """One planned write of an inferred batch (identity matters: steps are removed by identity)."""
+
+    op: Add | Retire
+    reason: str | None
+    produced_by: str | None
+
+
+def _pending(local: uuid.UUID, op: Add | Retire, scope: Scope) -> Memory:
+    """A fact this batch has accepted, shown to the resolver like a memory (batch-local id)."""
+    assert isinstance(op, Add)
+    f, now = op.fact, datetime.now(UTC)
+    return Memory(
+        id=local, scope=scope, type=f.type, key=f.key, content=f.content,
+        importance=f.importance, confidence=f.confidence, valid_from=now, valid_to=None,
+        superseded_by=None, expires_at=f.expires_at, source=f.source, metadata=f.metadata,
+        access_count=0, created_at=now, updated_at=now,
+    )  # fmt: skip
+
+
 class MemoryEngine:
     def __init__(
         self,
@@ -75,6 +98,9 @@ class MemoryEngine:
         namespace: str,
         embedder: Embedder,
         *,
+        extractor: Extractor | None = None,
+        resolver: Resolver | None = None,
+        related: int = 5,
         search: SearchConfig | None = None,
         clock: Clock = _utcnow,
     ) -> None:
@@ -84,6 +110,9 @@ class MemoryEngine:
             raise InvalidRequest(f"invalid namespace {namespace!r}") from exc
         self._store = store
         self._embedder = embedder
+        self._extractor = extractor
+        self._resolver = resolver
+        self._related = related  # existing memories each new fact is compared with
         self._search = search or SearchConfig()
         self._now = clock
         with store.transaction() as tx:
@@ -99,6 +128,10 @@ class MemoryEngine:
     def namespace(self) -> str:
         return self._ns
 
+    def close(self) -> None:
+        """Release the store's connections."""
+        self._store.close()
+
     # writes
 
     def add(
@@ -111,9 +144,12 @@ class MemoryEngine:
         idempotency_key: str | None = None,
     ) -> list[MemoryEvent]:
         """Remember what a conversation says. `infer=False`: each user message is stored as said
-        (one semantic memory each); `infer=True` extracts facts first (design §2, S4)."""
+        (one semantic memory each). `infer=True` (design §2): the extractor proposes facts, each
+        is compared with its related memories in exactly this scope and resolved (ADD, UPDATE as
+        SUPERSEDE, DELETE, NOOP), and the whole batch is written in one transaction. Model calls
+        run outside any transaction; a retry with the same key replays without calling them."""
         if infer:
-            raise InvalidRequest("infer=true needs an extractor (stage S4); send infer=false")
+            return self._infer(messages, scope, metadata, idempotency_key)
         facts = [
             Fact(m.content, metadata=dict(metadata or {}))
             for m in messages
@@ -201,14 +237,21 @@ class MemoryEngine:
         return hits
 
     def _rank(
-        self, tx: Tx, query: str, vector: list[float], filters: Filters, top_k: int
+        self,
+        tx: Tx,
+        query: str,
+        vector: list[float],
+        filters: Filters,
+        top_k: int,
+        candidates: int | None = None,
     ) -> list[MemoryHit]:
         """Hybrid ranking inside `tx` with a vector already computed: vector and BM25 candidates,
         RRF, then the weights. Internal lookups (related memories, S4) use it without counting
         an access."""
         cfg, now = self._search, self._now()
-        by_vector = [i for i, _ in tx.vector_search(self._ns, vector, filters, cfg.candidates)]
-        by_text = tx.text_search(self._ns, query, filters, cfg.candidates)
+        n = candidates or cfg.candidates
+        by_vector = [i for i, _ in tx.vector_search(self._ns, vector, filters, n)]
+        by_text = tx.text_search(self._ns, query, filters, n)
         relevance = rrf([by_vector, by_text], k=cfg.rrf_k)
         found = tx.get_memories(self._ns, list(relevance))
         hits = (
@@ -255,16 +298,26 @@ class MemoryEngine:
             replay = self.replay(idempotency_key, scope)
             if replay is not None:
                 return replay
-        checked = self._embedded(checked)  # model calls stay outside the transaction
+        ready = self._embedded(checked)  # model calls stay outside the transaction
+        return self._commit(
+            scope,
+            idempotency_key,
+            lambda tx: [self._apply(tx, scope, op, produced_by, reason) for op in ready],
+        )
+
+    def _commit(
+        self, scope: Scope, key: str | None, body: Callable[[Tx], list[MemoryEvent]]
+    ) -> list[MemoryEvent]:
+        """One write transaction: claim the idempotency key (a concurrent holder's result is
+        replayed), run `body`, store its events under the key."""
         with self._store.transaction() as tx:
-            if idempotency_key is not None:
-                held = tx.claim_idempotency(self._ns, idempotency_key, scope.user_id)
+            if key is not None:
+                held = tx.claim_idempotency(self._ns, key, scope.user_id)
                 if held is not None:  # a concurrent write with the same key got there first
-                    return self._replayed(held, scope, idempotency_key)
-            events = [self._apply(tx, scope, op, produced_by, reason) for op in checked]
-            if idempotency_key is not None:
-                result = _EVENTS.dump_python(events, mode="json")
-                tx.store_idempotency(self._ns, idempotency_key, result)
+                    return self._replayed(held, scope, key)
+            events = body(tx)
+            if key is not None:
+                tx.store_idempotency(self._ns, key, _EVENTS.dump_python(events, mode="json"))
             return events
 
     def replay(self, idempotency_key: str, scope: Scope) -> list[MemoryEvent] | None:
@@ -279,6 +332,97 @@ class MemoryEngine:
         if user_id != scope.user_id:  # never hand one user's write to another
             raise Conflict(f"idempotency key {key!r} was already used for another scope")
         return _EVENTS.validate_python(result)
+
+    def _infer(
+        self,
+        messages: Sequence[Message],
+        scope: Scope,
+        metadata: dict[str, Any] | None,
+        idempotency_key: str | None,
+    ) -> list[MemoryEvent]:
+        if self._extractor is None or self._resolver is None:
+            raise ConfigError("infer=true needs an extractor and a resolver (see open_engine)")
+        _check_scope(scope)
+        if idempotency_key is not None:
+            replay = self.replay(idempotency_key, scope)
+            if replay is not None:
+                return replay  # before any model call
+        extraction = self._extractor.extract(list(messages))
+        facts = [
+            _checked(dataclasses.replace(f, metadata=dict(metadata or {})), scope)
+            for f in extraction.facts
+        ]
+        adds = [op for op in self._embedded([Add(f) for f in facts]) if isinstance(op, Add)]
+        exact, k = Filters(scope, mode="exact"), self._related
+        with self._store.transaction() as tx:  # read-only: what each fact may conflict with
+            stored = [
+                [h.memory for h in self._rank(tx, a.fact.content, a.vector or [], exact, k, 4 * k)]
+                for a in adds
+            ]
+        plan = self._plan(scope, adds, stored, extraction.produced_by)
+        return self._commit(scope, idempotency_key, lambda tx: self._carry_out(tx, scope, plan))
+
+    def _plan(
+        self,
+        scope: Scope,
+        adds: list[Add],
+        stored: list[list[Memory]],
+        extracted_by: str | None,
+    ) -> list["_Step"]:
+        """Resolve the facts one by one (model calls, no transaction). A fact's candidates are its
+        related memories plus the facts this batch has already accepted (batch-local ids), so two
+        wordings of one change do not both land. The model proposes; this decides (rule 5): a
+        target outside the candidates is not applied, and every such downgrade says why."""
+        assert self._resolver is not None
+        steps: list[_Step] = []
+        accepted: dict[uuid.UUID, _Step] = {}  # batch-local id -> the step that adds it
+        claimed: dict[uuid.UUID, uuid.UUID] = {}  # stored memory -> batch-local id replacing it
+        for add, near in zip(adds, stored, strict=True):
+            pending = [_pending(local, step.op, scope) for local, step in accepted.items()]
+            decision = self._resolver.resolve(add.fact.content, near + pending)
+            action, target, reason = decision.action, decision.target, decision.reason
+            allowed = {m.id for m in near} | set(accepted)
+            if action in ("UPDATE", "DELETE") and target not in allowed:
+                action, reason = "ADD", f"{action} of {target} is not among the candidates; added"
+            if target in claimed:  # replaced earlier in this batch: aim at what replaced it
+                target = claimed[target]
+            if action == "NOOP":
+                continue
+            replaces: uuid.UUID | None = None
+            if target is not None and target in accepted:  # a fact of this very batch
+                earlier = accepted.pop(target)
+                steps.remove(earlier)
+                if action == "UPDATE":  # the later wording wins and takes over what it replaced
+                    replaces = earlier.op.replaces if isinstance(earlier.op, Add) else None
+            elif action == "UPDATE":
+                replaces = target
+            elif action == "DELETE" and target is not None:
+                steps.append(_Step(Retire(target), reason, decision.produced_by))
+            local = uuid7()
+            by = decision.produced_by if replaces is not None else extracted_by
+            step = _Step(dataclasses.replace(add, replaces=replaces), reason, by)
+            steps.append(step)
+            accepted[local] = step
+            if replaces is not None:
+                claimed[replaces] = local
+        return steps
+
+    def _carry_out(self, tx: Tx, scope: Scope, steps: list["_Step"]) -> list[MemoryEvent]:
+        """Apply a plan in the write transaction. A stored target that changed since it was looked
+        up is not applied: the fact is added instead, and says so."""
+        events: list[MemoryEvent] = []
+        for step in steps:
+            op, reason = step.op, step.reason
+            target = op.memory_id if isinstance(op, Retire) else op.replaces
+            if target is not None:
+                found = tx.get_memory(self._ns, target, lock=True)
+                if found is None or not found.current:
+                    if isinstance(op, Retire):
+                        continue  # already gone: nothing to retire
+                    op = dataclasses.replace(op, replaces=None)
+                    reason = f"{target} changed meanwhile; added instead"
+            events.append(self._apply(tx, scope, op, step.produced_by, reason))
+        return events
 
     def _embedded(self, ops: Sequence[Op]) -> list[Op]:
         """The ops with the vectors their new text needs, from one batch call (an op that already

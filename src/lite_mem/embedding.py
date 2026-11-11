@@ -31,7 +31,7 @@ class _HTTPEmbedder:
         self._config = config
         self._base_url = (config.base_url or self.default_url).rstrip("/")
         self._client = client or httpx2.Client(timeout=config.timeout_s)
-        self._dim: int | None = None
+        self._dim: int | None = config.dim
 
     @property
     def model(self) -> str:

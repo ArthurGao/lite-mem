@@ -40,11 +40,6 @@ def test_user_messages_are_stored_as_said(engine: MemoryEngine) -> None:
     assert [h.op for h in engine.history(memory.id)] == ["ADD"]
 
 
-def test_inferring_needs_an_extractor(engine: MemoryEngine) -> None:
-    with pytest.raises(InvalidRequest, match="extractor"):
-        engine.add([Message("user", "x")], ADA)
-
-
 def test_a_new_profile_value_supersedes_the_old_and_the_past_stays_visible(
     engine: MemoryEngine, clock: Clock
 ) -> None:

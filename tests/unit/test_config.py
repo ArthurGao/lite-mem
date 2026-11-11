@@ -83,3 +83,27 @@ def test_a_half_life_must_be_positive(bad: float) -> None:
 
     with pytest.raises(ValidationError, match="half"):
         SearchConfig(half_lives={"episodic": bad})
+
+
+def test_the_pipeline_is_switchable_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lite_mem import factory
+    from lite_mem.resolve import AddOnlyResolver
+
+    monkeypatch.setenv("LITEMEM_PIPELINE__RESOLVER", "add_only")
+    monkeypatch.setenv("LITEMEM_PIPELINE__RELATED", "3")
+    monkeypatch.setenv("LITEMEM_EMBEDDING__DIM", "8")
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert (s.pipeline.resolver, s.pipeline.related, s.embedding.dim) == ("add_only", 3, 8)
+
+    class Store:  # the factory's store boundary; binding needs no model call when dim is set
+        def transaction(self) -> object:
+            from contextlib import nullcontext
+            from unittest.mock import MagicMock
+
+            return nullcontext(MagicMock())
+
+        def close(self) -> None: ...
+
+    s = s.model_copy(update={"namespace": "app"})
+    engine = factory.open_engine(s, Store())  # type: ignore[arg-type]
+    assert isinstance(engine._resolver, AddOnlyResolver) and engine._related == 3

@@ -72,3 +72,25 @@ class FakeLLM:
 
     def roles(self) -> list[str]:
         return [role for role, _ in self.calls]
+
+
+def user_lines(payload: dict[str, Any]) -> dict[str, Any]:
+    """An `extract` handler: each user message is one semantic fact, as said."""
+    said = [m["content"] for m in payload["MESSAGES"] if m["role"] == "user"]
+    return {"facts": [{"content": c, "type": "semantic", "importance": 0.5} for c in said]}
+
+
+def update_when(marker: str) -> Handler:
+    """A `resolve` handler: UPDATE the first existing memory when the new fact contains `marker`,
+    otherwise ADD."""
+
+    def decide(payload: dict[str, Any]) -> dict[str, Any]:
+        if marker in payload["NEW"] and payload["EXISTING"]:
+            return {
+                "action": "UPDATE",
+                "target_id": payload["EXISTING"][0]["id"],
+                "reason": "moved",
+            }
+        return {"action": "ADD", "target_id": None, "reason": "unrelated"}
+
+    return decide

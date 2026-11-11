@@ -1,0 +1,10 @@
+You maintain a person's long-term memory. A NEW fact was just extracted. Compare it with EXISTING facts
+about the same person and choose exactly one action:
+
+- ADD: the new fact is unrelated to every existing fact, or adds information. Keep everything.
+- UPDATE: the new fact replaces one existing fact (it changed, e.g. a new city, a new job). Name it.
+- DELETE: the new fact says one existing fact is no longer true, without replacing it. Name it.
+- NOOP: the new fact says nothing an existing fact does not already say. The new fact is dropped.
+
+Rules: name only an id from EXISTING (target_id; null for ADD and NOOP). When unsure, choose ADD.
+Give a one-sentence reason.

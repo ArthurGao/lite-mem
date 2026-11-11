@@ -45,6 +45,17 @@ class EmbeddingConfig(BaseModel):
     base_url: str | None = None
     api_key: SecretStr | None = None
     timeout_s: float = Field(default=60.0, gt=0)
+    # The model's vector size, when known: skips the one probe call that learns it.
+    dim: int | None = Field(default=None, gt=0)
+
+
+class PipelineConfig(BaseModel):
+    """How add(infer=true) runs (design §2), switchable for the eval (design §8)."""
+
+    resolver: Literal["llm", "add_only"] = "llm"  # add_only: mem0 2.2.1's behaviour
+    related: int = Field(default=5, ge=1, le=20)  # existing memories each fact is compared with
+    extract_prompt: str = "extract_facts.j2"  # a file in lite_mem/prompts
+    resolve_prompt: str = "resolve_conflict.j2"
 
 
 class RoleOverride(BaseModel):
@@ -122,3 +133,4 @@ class Settings(BaseSettings):
     embedding: EmbeddingConfig = EmbeddingConfig()
     llm: LLMConfig = LLMConfig()
     search: SearchConfig = SearchConfig()
+    pipeline: PipelineConfig = PipelineConfig()
