@@ -101,3 +101,4 @@ class MemoryHit:
     memory: Memory
     score: float  # relevance x weight
     relevance: float  # fused (RRF) relevance, before the weights
+    via: uuid.UUID | None = None  # found by a follow-up search through this hit (S10)

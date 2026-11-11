@@ -13,7 +13,7 @@ right memories again with hybrid vector + BM25 search weighted by importance and
 - A memory engine for [llm-steward](https://github.com/ArthurGao/llm-steward); sister of
   [lite-rag](https://github.com/ArthurGao/lite-rag).
 
-Status: in development (stages S0–S8b done; next S9, the llm-steward provider). The design is in [docs/lite-mem-design.md](docs/lite-mem-design.md);
+Status: stages S0–S10 done (S9: llm-steward's `LiteMemProvider`; S10: two-hop search without a graph). The design is in [docs/lite-mem-design.md](docs/lite-mem-design.md);
 stages, acceptance and what each stage's review found are in its §12.
 
 ## Quick start
@@ -27,6 +27,7 @@ uv sync --all-extras
 uv run litemem migrate
 uv run litemem add --user emma "I live in Wellington and work as a nurse"
 uv run litemem search --user emma "where does Emma live"
+uv run litemem search --user emma --follow-up 1 "where does my sister work"  # two-hop (design §5)
 uv run litemem eval -v resolve -v add_only --mem0   # the synthetic comparison (about an hour on a laptop)
 uv run litemem maintain --user emma                  # offline: merge, expire, forget (design §6)
 ```

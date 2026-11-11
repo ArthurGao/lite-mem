@@ -147,7 +147,7 @@ def create_app(settings: Settings, components: Components | None = None) -> Fast
         hits = engine.search(
             body.query, body.scope.to_scope(), top_k=body.top_k,
             include_shared=body.include_shared, types=body.types, metadata=body.metadata,
-            as_of=body.as_of,
+            as_of=body.as_of, follow_up=body.follow_up,
         )  # fmt: skip
         return HitsOut(hits=hits)
 

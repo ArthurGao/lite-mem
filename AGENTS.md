@@ -24,7 +24,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S10 — memory graph: gate measured 2026-11-12, graph not built** (design §12 S10 record: two-hop recall 13/20 → 19/20 with a query-time follow-up search; whether to add `search(follow_up=)` is the owner's call). S0–S9 done 2026-11-12 (S9's adapter lives in llm-steward); eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
+**S10 done 2026-11-12: no memory graph; `search(follow_up=N)` instead** (design §5, §12 S10 record: two-hop recall 13/20 → 20/20 at top 5, single-hop unchanged). S0–S9 done 2026-11-12 (S9's adapter lives in llm-steward); eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
 
 ## Rules
 

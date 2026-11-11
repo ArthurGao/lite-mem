@@ -39,6 +39,11 @@ from lite_mem.types import (
 
 MAX_FACT_CHARS = 2000
 MAX_TOP_K = 100
+# A follow-up search (S10) searches each of the first round's top `follow_up` hits for what it
+# adds to the question, and takes the best new hits from each (measured 2026-11-12: two-hop
+# recall 13/20 -> 20/20 with one seed and two hits each, top 5).
+MAX_FOLLOW_UP = 3
+FOLLOW_UP_HITS = 2
 # Bounds every interface shares (library, CLI, HTTP): a write's size, a list's length.
 MAX_MESSAGES = 200
 MAX_MESSAGE_CHARS = 20_000
@@ -416,19 +421,74 @@ class MemoryEngine:
         types: Sequence[MemoryType] | None = None,
         metadata: dict[str, Any] | None = None,
         as_of: datetime | None = None,
+        follow_up: int = 0,
     ) -> list[MemoryHit]:
         """The memories that answer `query`, best first (design §5): vector and BM25 candidates
-        fused by RRF, then weighted by importance, age (per type) and confidence."""
+        fused by RRF, then weighted by importance, age (per type) and confidence.
+
+        `follow_up` (0 to MAX_FOLLOW_UP, off by default) adds a second round for questions that
+        need two memories ("where does my sister work": "Lily is my sister", then what Lily
+        does): the top `follow_up` hits are searched again for the words the question lacks, and
+        their best new hits (`via` = the hit they came from) follow the first round's top half
+        (rounded up).
+        Scores from the two rounds are not comparable; the order is the ranking."""
         if not query.strip():
             raise InvalidRequest("search needs a query")
         if not 1 <= top_k <= MAX_TOP_K:
             raise InvalidRequest(f"top_k must be between 1 and {MAX_TOP_K}")
+        if not 0 <= follow_up <= min(MAX_FOLLOW_UP, top_k):
+            raise InvalidRequest(f"follow_up must be between 0 and {MAX_FOLLOW_UP} and <= top_k")
         filters = _filters(scope, include_shared, as_of, types, metadata, self._now())
         [vector] = self._embedder.embed([query])  # before the transaction: a model call
         with self._store.transaction() as tx:
             hits = self._rank(tx, query, vector, filters, top_k)
-            tx.touch(self._ns, [h.memory.id for h in hits], self._now())  # a caller's retrieval
+            if not follow_up:
+                return self._touched(tx, hits)
+        probes = self._probes(query, hits[:follow_up])  # between the rounds: a model call
+        with self._store.transaction() as tx:
+            # ranked again, so everything returned holds in this one snapshot (what changed
+            # during the model call is not returned)
+            first = self._rank(tx, query, vector, filters, top_k)
+            return self._touched(tx, self._followed(tx, first, follow_up, probes, filters, top_k))
+
+    def _touched(self, tx: Tx, hits: list[MemoryHit]) -> list[MemoryHit]:
+        """A caller's retrieval counts as an access of every hit it returns."""
+        tx.touch(self._ns, [h.memory.id for h in hits], self._now())
         return hits
+
+    def _probes(
+        self, query: str, seeds: list[MemoryHit]
+    ) -> list[tuple[uuid.UUID, str, list[float]]]:
+        """Each seed's terms the question lacks (seeds that add none are dropped), embedded in
+        one call: what the second round of `search` looks for."""
+        asked = set(terms(query))
+        lacking = ((h.memory.id, [t for t in terms(h.memory.content) if t not in asked])
+                   for h in seeds)  # fmt: skip
+        texts = [(seed, " ".join(words)) for seed, words in lacking if words]
+        vectors = self._embedder.embed([text for _, text in texts]) if texts else []
+        return [(seed, text, v) for (seed, text), v in zip(texts, vectors, strict=True)]
+
+    def _followed(
+        self,
+        tx: Tx,
+        first: list[MemoryHit],
+        seeds: int,
+        probes: list[tuple[uuid.UUID, str, list[float]]],
+        filters: Filters,
+        top_k: int,
+    ) -> list[MemoryHit]:
+        """The second round's merge (design §5): the first round's top half, rounded up, stays as
+        it is — a single-hop answer never moves down — then each probe's best new hits (at most
+        FOLLOW_UP_HITS), then the rest of the first round, cut to `top_k`."""
+        hits = first[: (top_k + 1) // 2]
+        seen = {h.memory.id for h in first[: max(seeds, len(hits))]}  # the seeds, the kept
+        for seed, text, vector in probes:
+            new = [h for h in self._rank(tx, text, vector, filters, top_k)
+                   if h.memory.id not in seen][:FOLLOW_UP_HITS]  # fmt: skip
+            hits += [dataclasses.replace(h, via=seed) for h in new]
+            seen |= {h.memory.id for h in new}
+        kept = {h.memory.id for h in hits}
+        return (hits + [h for h in first if h.memory.id not in kept])[:top_k]
 
     def _rank(
         self,

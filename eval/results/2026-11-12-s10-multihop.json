@@ -394,5 +394,338 @@
     "k5_m2": 19,
     "k10_m2": 19,
     "miss": "Where does my sister work? (round 2 top 3 for the seed: puppy and best friend outrank pharmacist, which is 4th; searching just \"Lily\" puts it 3rd)"
+  },
+  "engine_follow_up": {
+    "runs": [
+      {
+        "top_k": 3,
+        "follow_up": 0,
+        "questions": 20,
+        "hop1": 19,
+        "hop2": 14,
+        "both": 13
+      },
+      {
+        "top_k": 3,
+        "follow_up": 1,
+        "questions": 20,
+        "hop1": 20,
+        "hop2": 19,
+        "both": 19
+      },
+      {
+        "top_k": 5,
+        "follow_up": 0,
+        "questions": 20,
+        "hop1": 19,
+        "hop2": 14,
+        "both": 13
+      },
+      {
+        "top_k": 5,
+        "follow_up": 1,
+        "questions": 20,
+        "hop1": 20,
+        "hop2": 20,
+        "both": 20
+      },
+      {
+        "top_k": 5,
+        "follow_up": 2,
+        "questions": 20,
+        "hop1": 20,
+        "hop2": 20,
+        "both": 20
+      },
+      {
+        "top_k": 10,
+        "follow_up": 1,
+        "questions": 20,
+        "hop1": 20,
+        "hop2": 20,
+        "both": 20
+      },
+      {
+        "top_k": 10,
+        "follow_up": 2,
+        "questions": 20,
+        "hop1": 20,
+        "hop2": 20,
+        "both": 20
+      }
+    ],
+    "rows_top5_follow_up1": [
+      {
+        "user": "ava",
+        "q": "Where does my sister work?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "Lily is my older sister.",
+          "Tom is my manager.",
+          "My mother lives in Christchurch.",
+          "Biscuit is Lily's puppy.",
+          "Lily works as a pharmacist at the night clinic."
+        ]
+      },
+      {
+        "user": "ava",
+        "q": "Where did my manager grow up?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "Tom is my manager.",
+          "My colleague Sam grew up in Nelson.",
+          "Tom grew up in Dunedin.",
+          "Lily is my older sister.",
+          "Biscuit is Lily's puppy."
+        ]
+      },
+      {
+        "user": "ava",
+        "q": "What instrument does my best friend play?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "My best friend is Priya.",
+          "Lily is my older sister.",
+          "Tom is my manager.",
+          "Priya plays the cello in a quartet.",
+          "Biscuit is Lily's puppy."
+        ]
+      },
+      {
+        "user": "ava",
+        "q": "What breed is my sister's puppy?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "Biscuit is Lily's puppy.",
+          "Lily is my older sister.",
+          "My best friend is Priya.",
+          "Biscuit is a beagle and hates the rain.",
+          "Lily works as a pharmacist at the night clinic."
+        ]
+      },
+      {
+        "user": "ava",
+        "q": "Which street is my dentist on?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "My dentist is Dr Okafor.",
+          "Dr Okafor's clinic is on Cuba Street.",
+          "My gym is open until ten.",
+          "Tom is my manager.",
+          "I am allergic to shellfish."
+        ]
+      },
+      {
+        "user": "ava",
+        "q": "When does my car need its warrant?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "The Corolla needs a warrant of fitness in March.",
+          "Tom is my manager.",
+          "My gym is open until ten.",
+          "I drive a blue Corolla.",
+          "The yoga studio is above the bike shop."
+        ]
+      },
+      {
+        "user": "ava",
+        "q": "What food does my cousin's restaurant serve?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "My cousin Ben works as a chef in Melbourne.",
+          "Ben's restaurant serves Sichuan food.",
+          "My favourite cafe is Fidel's.",
+          "My neighbour Grace works at the library.",
+          "My aunt runs a bakery in Napier."
+        ]
+      },
+      {
+        "user": "ava",
+        "q": "What is above the bike shop that I go to on Tuesdays?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "I go to yoga on Tuesdays.",
+          "The yoga studio is above the bike shop.",
+          "I am saving for a trip to Japan.",
+          "My gym is open until ten.",
+          "My best friend is Priya."
+        ]
+      },
+      {
+        "user": "ava",
+        "q": "Where does my flatmate's pet sleep?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "My flatmate has a cat called Pepper.",
+          "Biscuit is Lily's puppy.",
+          "My favourite cafe is Fidel's.",
+          "Pepper sleeps on the heater all day.",
+          "Biscuit is a beagle and hates the rain."
+        ]
+      },
+      {
+        "user": "ava",
+        "q": "When does my favourite cafe close early?",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "My favourite cafe is Fidel's.",
+          "Fidel's closes early on Sundays.",
+          "My gym is open until ten.",
+          "Biscuit is Lily's puppy.",
+          "My best friend is Priya."
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我哥哥做什么工作？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "我哥哥叫陈磊。",
+          "我表弟在深圳做程序员。",
+          "我表弟的公司做游戏。",
+          "陈磊在一家汽车厂当工程师。",
+          "我的医生是李医生。"
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我的导师研究什么？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "我的导师是王教授。",
+          "王教授研究海洋生物。",
+          "我的医生是李医生。",
+          "我最喜欢的面馆是老王面馆。",
+          "我最好的朋友是小雨。"
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我最好的朋友在学什么？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "我最好的朋友是小雨。",
+          "我女儿在学跳舞。",
+          "小雨在学日语。",
+          "我的医生是李医生。",
+          "豆豆是我女儿的仓鼠。"
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我女儿的宠物最喜欢吃什么？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "豆豆最喜欢吃葵花籽。",
+          "豆豆是我女儿的仓鼠。",
+          "我女儿在学跳舞。",
+          "我哥哥叫陈磊。",
+          "我对花粉过敏。"
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我的医生的诊所在哪条路？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "李医生的诊所在人民路。",
+          "我的医生是李医生。",
+          "我的邻居张阿姨在菜市场卖水果。",
+          "我的导师是王教授。",
+          "王教授研究海洋生物。"
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我的车什么时候要保养？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "比亚迪下个月要保养。",
+          "我开一辆白色的比亚迪。",
+          "我的房东姓赵。",
+          "赵先生每月五号收房租。",
+          "我在攒钱买钢琴。"
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我表弟的公司做什么？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "我表弟的公司做游戏。",
+          "我表弟在深圳做程序员。",
+          "我的房东姓赵。",
+          "我爸爸喜欢下象棋。",
+          "我在攒钱买钢琴。"
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我每周三去的地方在哪里？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "我每周三去游泳。",
+          "老刘周末去钓鱼。",
+          "我妈妈住在苏州。",
+          "游泳馆在体育中心旁边。",
+          "我女儿在学跳舞。"
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我最喜欢的面馆哪天不开门？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "老王面馆周一不开门。",
+          "我最喜欢的面馆是老王面馆。",
+          "豆豆最喜欢吃葵花籽。",
+          "老刘周末去钓鱼。",
+          "我的导师是王教授。"
+        ]
+      },
+      {
+        "user": "chen",
+        "q": "我的房东每月几号收租？",
+        "hop1": true,
+        "hop2": true,
+        "found": [
+          "我的房东姓赵。",
+          "赵先生每月五号收房租。",
+          "我的医生是李医生。",
+          "我哥哥叫陈磊。",
+          "张阿姨的孙子在上小学。"
+        ]
+      }
+    ],
+    "probe_comparison_k5": {
+      "sentence": 19,
+      "residual_terms": 20
+    },
+    "single_hop_s5_dataset": {
+      "follow_up 0/1/2": {
+        "hit@3": 11,
+        "hit@5": 11,
+        "questions": 11
+      }
+    }
   }
 }

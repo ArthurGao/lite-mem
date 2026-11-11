@@ -187,3 +187,13 @@ def test_maintain_prints_what_it_changed(cli: CliRunner, pg_store: PgStore) -> N
     result = cli.invoke(app, ["maintain", "--user", "ada"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == {"expired": 1, "merged": 0, "summarised": 0, "forgotten": 0}
+
+
+def test_search_with_a_follow_up(cli: CliRunner) -> None:
+    said = ["Lily is my sister", "My brother is Ben", "My friend is Priya", "My manager is Tom",
+            "Lily is a pharmacist"]  # fmt: skip
+    assert cli.invoke(app, ["add", *said, "--user", "ada"]).exit_code == 0
+    args = ["search", "where does my sister work", "--user", "ada", "--top-k", "2"]
+    found = _rows(cli.invoke(app, [*args, "--follow-up", "1"]).output)
+    assert [r["content"] for r in found] == ["Lily is my sister", "Lily is a pharmacist"]
+    assert found[0]["via"] is None and found[1]["via"] == found[0]["id"]

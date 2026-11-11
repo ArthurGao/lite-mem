@@ -91,12 +91,15 @@ def add_command(
 
 
 @app.command("search")
-def search_command(query: str, user: User = None, agent: Agent = None, top_k: int = 10) -> None:
-    """The memories that answer QUERY, best first."""
+def search_command(
+    query: str, user: User = None, agent: Agent = None, top_k: int = 10, follow_up: int = 0
+) -> None:
+    """The memories that answer QUERY, best first (--follow-up N: a second round through the
+    top N hits, for questions that need two memories)."""
     with _engine() as engine:
-        hits = engine.search(query, Scope(user, agent), top_k=top_k)
-        _show([{"score": round(h.score, 6), "id": h.memory.id, "content": h.memory.content}
-               for h in hits])  # fmt: skip
+        hits = engine.search(query, Scope(user, agent), top_k=top_k, follow_up=follow_up)
+        _show([{"score": round(h.score, 6), "id": h.memory.id, "content": h.memory.content,
+                "via": h.via} for h in hits])  # fmt: skip
 
 
 @app.command("list")

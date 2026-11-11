@@ -393,3 +393,24 @@ def test_concurrent_opens_cannot_pass_the_limit(components: Components) -> None:
     for t in threads:
         t.join()
     assert sorted(outcome.values()) == ["opened"] * 2 + ["refused"] * 3
+
+
+def test_search_takes_a_follow_up_and_names_what_each_hit_came_through(
+    components: Components,
+) -> None:
+    client = _client(components)
+    [sister] = _add(client, "Lily is my sister").json()["events"]
+    for text in ["My brother is Ben", "My friend is Priya", "My manager is Tom",
+                 "Lily is a pharmacist"]:  # fmt: skip
+        _add(client, text)
+    body = {"query": "where does my sister work", "scope": {"user_id": "ada"}, "top_k": 2}
+    plain = client.post("/v1/memories:search", json=body, headers=_auth()).json()["hits"]
+    followed = client.post(
+        "/v1/memories:search", json={**body, "follow_up": 1}, headers=_auth()
+    ).json()["hits"]
+    assert [h["via"] for h in plain] == [None, None]
+    assert [h["via"] for h in followed] == [None, sister["memory_id"]]
+    assert followed[1]["memory"]["content"] == "Lily is a pharmacist"
+    for bad in (-1, 4, 3):  # out of range, or more than top_k: one status, like top_k's
+        r = client.post("/v1/memories:search", json={**body, "follow_up": bad}, headers=_auth())
+        assert _is_problem(r, 400), (bad, r.text)

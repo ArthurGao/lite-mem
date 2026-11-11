@@ -64,6 +64,7 @@ class SearchIn(_Body):
     types: list[MemoryType] | None = None
     metadata: dict[str, Any] | None = None
     as_of: datetime | None = None
+    follow_up: int = 0  # S10; bounds checked by engine.search, like top_k (one status: 400)
 
 
 class UpdateIn(_Body):

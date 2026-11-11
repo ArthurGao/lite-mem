@@ -8,8 +8,8 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from lite_mem.engine import MemoryEngine
-from lite_mem.errors import ModelError
+from lite_mem.engine import FOLLOW_UP_HITS, MemoryEngine
+from lite_mem.errors import InvalidRequest, ModelError
 from lite_mem.keyword import idf, term_counts, term_score, terms
 from lite_mem.stores.base import Filters, Store
 from lite_mem.stores.pg import PgStore
@@ -296,3 +296,98 @@ def test_wide_embeddings_fit_without_an_ann_index(pg_store: PgStore, clock: Cloc
     engine = MemoryEngine(pg_store, "wide", FakeEmbedder(dim=3072), clock=clock)
     engine.remember(Fact("Lives in Berlin"), ADA)
     assert [h.memory.content for h in engine.search("Berlin", ADA)] == ["Lives in Berlin"]
+
+
+SISTER = ["Lily is my sister", "My brother is Ben", "My friend is Priya", "My manager is Tom"]
+HOP = "Lily works as a pharmacist at the night clinic"
+
+
+def _sister(engine: MemoryEngine) -> None:
+    """S10: the second hop shares no word with the question; the "my …" facts all look closer."""
+    for d in [*SISTER, HOP]:
+        engine.remember(Fact(d), ADA)
+    engine.remember(Fact("Lily works as a nurse"), BOB)  # another user's Lily
+
+
+def test_a_follow_up_search_finds_the_second_hop(engine: MemoryEngine) -> None:
+    _sister(engine)
+    question = "where does my sister work"
+    plain = engine.search(question, ADA, top_k=3)
+    assert plain[0].memory.content == "Lily is my sister"
+    assert HOP not in [h.memory.content for h in plain]  # what S10 measured: plain search misses it
+    hits = engine.search(question, ADA, top_k=3, follow_up=1)
+    assert [h.memory.content for h in hits[:2]] == [h.memory.content for h in plain[:2]]  # kept
+    assert hits[2].memory.content == HOP and hits[2].via == plain[0].memory.id
+    assert [h.via for h in hits[:2]] == [None, None]
+    assert "Lily works as a nurse" not in _found(engine, question, top_k=5, follow_up=2)  # scope
+
+
+def test_a_follow_up_searches_only_the_words_the_question_lacks(store: Store, clock: Clock) -> None:
+    embedder = FakeEmbedder()
+    engine = MemoryEngine(store, "app", embedder, clock=clock)
+    engine.remember(Fact("my sister"), ADA)
+    engine.remember(Fact("Lily is my sister"), ADA)
+    embedder.calls.clear()
+    engine.search("my sister", ADA, top_k=3, follow_up=2)
+    # one call for the question, one batch for the follow-ups; "my sister" adds nothing to follow
+    assert embedder.calls == [["my sister"], ["lily is"]]
+
+
+def test_follow_up_counts_its_hits_as_accessed(engine: MemoryEngine) -> None:
+    _sister(engine)
+    hits = engine.search("where does my sister work", ADA, top_k=3, follow_up=1)
+    assert all(engine.get(h.memory.id).access_count == 1 for h in hits)
+
+
+@pytest.mark.parametrize(("top_k", "follow_up"), [(5, -1), (5, 4), (2, 3)])
+def test_follow_up_is_bounded(engine: MemoryEngine, top_k: int, follow_up: int) -> None:
+    with pytest.raises(InvalidRequest, match="follow_up"):
+        engine.search("q", ADA, top_k=top_k, follow_up=follow_up)
+
+
+def test_each_seed_adds_at_most_follow_up_hits(engine: MemoryEngine) -> None:
+    _sister(engine)
+    lily = ["runs on Sundays", "drives a red van", "owns a beagle", "is a vegan", "sings", "is 30"]
+    for d in lily:
+        engine.remember(Fact(f"Lily {d}"), ADA)
+    hits = engine.search("where does my sister work", ADA, top_k=10, follow_up=1)
+    # 5 kept from the first round, room for 5 more, and the second round could add 5 Lilys
+    assert len([h for h in hits if h.via]) == FOLLOW_UP_HITS
+    assert len(hits) == 10 and len({h.memory.id for h in hits}) == 10  # filled from round one
+
+
+class _Meddling(FakeEmbedder):
+    """Runs `between` on its second call: the follow-up probes, embedded between the rounds."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.between: Any = None
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if len(self.calls) == 1 and self.between:
+            self.between()
+        return super().embed(texts)
+
+
+def test_a_follow_up_returns_only_what_holds_when_it_finishes(store: Store, clock: Clock) -> None:
+    """Codex review of S10: the first round's hits were returned from its own transaction, so one
+    retired while the probes were embedded still came back."""
+    embedder = _Meddling()
+    engine = MemoryEngine(store, "app", embedder, clock=clock)
+    _sister(engine)
+    plain = engine.search("where does my sister work", ADA, top_k=3)
+    retired = plain[1].memory
+    embedder.calls.clear()
+    embedder.between = lambda: engine.delete(retired.id)
+    hits = engine.search("where does my sister work", ADA, top_k=3, follow_up=1)
+    assert retired.id not in [h.memory.id for h in hits]
+    assert len({h.memory.id for h in hits}) == len(hits) == 3
+
+
+def test_a_follow_up_keeps_the_searchs_filters(engine: MemoryEngine) -> None:
+    for d in SISTER:
+        engine.remember(Fact(d, metadata={"topic": "family"}), ADA)
+    engine.remember(Fact(HOP, metadata={"topic": "work"}), ADA)
+    found = _found(engine, "where does my sister work", top_k=5, follow_up=2,
+                   metadata={"topic": "family"})  # fmt: skip
+    assert sorted(found) == sorted(SISTER)
