@@ -15,7 +15,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from lite_mem.config import Namespace, SearchConfig
 from lite_mem.embedding import Embedder
-from lite_mem.errors import ConfigError, Conflict, InvalidRequest, NotFound
+from lite_mem.errors import ConfigError, Conflict, InvalidRequest, NotFound, redact
 from lite_mem.extract import Extractor
 from lite_mem.fusion import rrf
 from lite_mem.ids import uuid7
@@ -200,6 +200,10 @@ class MemoryEngine:
             return tx.erase_user(self._ns, user_id)
 
     # reads
+
+    def health(self, *, deep: bool = True) -> dict[str, str]:
+        """See `health()`."""
+        return health(self._store, self._embedder, deep=deep)
 
     def get(self, memory_id: uuid.UUID) -> Memory:
         with self._store.transaction() as tx:
@@ -560,6 +564,24 @@ class MemoryEngine:
                 + (f" (superseded by {memory.superseded_by})" if memory.superseded_by else "")
             )
         return memory
+
+
+def health(store: Store, embedder: Embedder, *, deep: bool) -> dict[str, str]:
+    """ "ok" or "error" for the store and, when `deep`, the embedding model (one embedding: it also
+    keeps the model loaded, so frequent probes should not be deep). The reason is logged
+    (redacted), never returned: it can carry endpoints."""
+    checks: list[tuple[str, Callable[[], object]]] = [("store", store.ping)]
+    if deep:
+        checks.append(("embedding", lambda: embedder.embed(["health"])))
+    parts: dict[str, str] = {}
+    for part, check in checks:
+        try:
+            check()
+            parts[part] = "ok"
+        except Exception as exc:  # any failure is "error"
+            log.warning("health: %s failed: %s", part, redact(f"{type(exc).__name__}: {exc}"))
+            parts[part] = "error"
+    return parts
 
 
 def _content(text: str) -> str:

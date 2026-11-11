@@ -25,3 +25,18 @@ jobs:
       - run: uv run ruff check && uv run ruff format --check
       - run: uv run mypy
       - run: uv run pytest
+
+  # The image deploy/compose.yaml runs. Built in CI so a broken image cannot go unnoticed
+  # (llm-steward's lesson); the compose file is parsed with the template env.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t lite-mem:ci .
+      - name: the image runs (imports the server, the CLI starts)
+        run: |
+          docker run --rm lite-mem:ci python -c "import lite_mem.server.app"
+          docker run --rm lite-mem:ci litemem serve --help
+      - run: |
+          printf 'POSTGRES_PASSWORD=ci\nLITEMEM_SERVER__API_KEYS=[]\n' > ci.env
+          docker compose -f deploy/compose.yaml --env-file ci.env config -q

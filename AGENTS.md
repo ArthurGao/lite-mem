@@ -24,7 +24,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S6 — HTTP service** (design §12). S0–S5b done 2026-11-12; eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
+**S7 — consolidation and forgetting** (design §12). S0–S6 done 2026-11-12; eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
 
 ## Rules
 

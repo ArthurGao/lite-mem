@@ -10,24 +10,17 @@ from typer.testing import CliRunner
 from lite_mem import factory
 from lite_mem.cli import app
 from lite_mem.engine import MemoryEngine
-from lite_mem.extract import RuleExtractor
-from lite_mem.resolve import AddOnlyResolver
 from lite_mem.stores.pg import PgStore
-from lite_mem.testing import FakeEmbedder
-from tests.conftest import TEST_SCHEMA
+from tests.conftest import TEST_SCHEMA, fake_engine
 
 
 @pytest.fixture
 def cli(store: PgStore, pg_url: str, monkeypatch: pytest.MonkeyPatch) -> CliRunner:
     """`store` is asked for its migrated schema; the CLI opens its own pool on it."""
 
-    def fake_engine(*_: Any, **__: Any) -> MemoryEngine:
-        return MemoryEngine(
-            PgStore(pg_url, TEST_SCHEMA), "app", FakeEmbedder(),
-            extractor=RuleExtractor(), resolver=AddOnlyResolver(),
-        )  # fmt: skip
-
-    monkeypatch.setattr(factory, "open_engine", fake_engine)
+    monkeypatch.setattr(
+        factory, "open_engine", lambda *_, **__: fake_engine(PgStore(pg_url, TEST_SCHEMA))
+    )
     return CliRunner()
 
 
@@ -62,13 +55,10 @@ def test_eval_runs_the_variants_and_prints_the_table(
 ) -> None:
     from pathlib import Path
 
-    def fake_engine(settings: Any, *_: Any, **__: Any) -> MemoryEngine:
-        return MemoryEngine(
-            PgStore(pg_url, settings.db_schema), settings.namespace, FakeEmbedder(),
-            extractor=RuleExtractor(), resolver=AddOnlyResolver(),
-        )  # fmt: skip
+    def variant_engine(settings: Any, *_: Any, **__: Any) -> MemoryEngine:
+        return fake_engine(PgStore(pg_url, settings.db_schema), settings.namespace)
 
-    monkeypatch.setattr(factory, "open_engine", fake_engine)
+    monkeypatch.setattr(factory, "open_engine", variant_engine)
     monkeypatch.setenv("LITEMEM_DATABASE_URL", pg_url)
     dataset = Path(__file__).parents[2] / "eval" / "dataset.json"
     out = tmp_path / "run.json"
@@ -139,14 +129,11 @@ def test_a_failing_mem0_run_keeps_the_lite_mem_results_and_hides_the_url(
 
         def close(self) -> None: ...
 
-    def fake_engine(settings: Any, *_: Any, **__: Any) -> MemoryEngine:
-        return MemoryEngine(
-            PgStore(pg_url, settings.db_schema), settings.namespace, FakeEmbedder(),
-            extractor=RuleExtractor(), resolver=AddOnlyResolver(),
-        )  # fmt: skip
+    def variant_engine(settings: Any, *_: Any, **__: Any) -> MemoryEngine:
+        return fake_engine(PgStore(pg_url, settings.db_schema), settings.namespace)
 
     monkeypatch.setattr(eval_mem0, "Mem0System", BrokenMem0)
-    monkeypatch.setattr(factory, "open_engine", fake_engine)
+    monkeypatch.setattr(factory, "open_engine", variant_engine)
     monkeypatch.setenv("LITEMEM_DATABASE_URL", pg_url)
     dataset = Path(__file__).parents[2] / "eval" / "dataset.json"
     result = CliRunner().invoke(
@@ -157,3 +144,30 @@ def test_a_failing_mem0_run_keeps_the_lite_mem_results_and_hides_the_url(
     assert "| add_only |" in result.output and "mem0 run failed: RuntimeError" in result.output
     password = psycopg.conninfo.conninfo_to_dict(pg_url).get("password")
     assert password and password not in result.output
+
+
+def test_key_new_prints_the_token_once_and_the_entry_to_configure() -> None:
+    from lite_mem.config import ApiKey
+    from lite_mem.server.auth import authenticate
+
+    result = CliRunner().invoke(app, ["key", "new", "steward", "--namespace", "steward/*"])
+    assert result.exit_code == 0, result.output
+    token = next(w for w in result.output.split() if w.startswith("lm_steward_"))
+    entry = ApiKey.model_validate_json(
+        next(line for line in result.output.splitlines() if line.startswith("{"))
+    )
+    assert entry.namespaces == ["steward/*"] and token.split("_", 2)[2] not in entry.sha256
+    assert authenticate(f"Bearer {token}", [entry]) == entry
+
+
+def test_serve_refuses_a_public_address_without_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    import uvicorn
+
+    started: list[dict[str, Any]] = []
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: started.append(kw))
+    monkeypatch.setenv("LITEMEM_NAMESPACE", "app")
+    refused = CliRunner().invoke(app, ["serve", "--host", "0.0.0.0"])
+    assert refused.exit_code == 1 and "API key" in refused.output and started == []
+    ok = CliRunner().invoke(app, ["serve"])
+    assert ok.exit_code == 0, ok.output
+    assert (started[0]["host"], started[0]["port"]) == ("127.0.0.1", 8710)

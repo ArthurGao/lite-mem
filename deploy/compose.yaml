@@ -1,0 +1,38 @@
+# lite-mem + PostgreSQL (pgvector). Ollama runs on the host (models: bge-m3, qwen3).
+#   cp .env.example .env    # then set LITEMEM_SERVER__API_KEYS (litemem key new …) and POSTGRES_PASSWORD
+#   docker compose -f deploy/compose.yaml --env-file .env up -d --build --wait
+name: lite-mem
+services:
+  db:
+    image: pgvector/pgvector:0.8.6-pg18
+    environment:
+      POSTGRES_USER: lite_mem
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: lite_mem
+    volumes: [db:/var/lib/postgresql]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lite_mem -d lite_mem"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  lite-mem:
+    build: ..
+    depends_on:
+      db: {condition: service_healthy}
+    ports: ["127.0.0.1:${LITEMEM_PORT:-8710}:8710"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    # Every LITEMEM_* setting of .env reaches the container (pipeline, roles, search weights…);
+    # `environment` below overrides only what must differ inside it.
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      LITEMEM_DATABASE_URL: postgresql://lite_mem:${POSTGRES_PASSWORD}@db:5432/lite_mem
+      LITEMEM_NAMESPACE: ${LITEMEM_NAMESPACE:-app}
+      LITEMEM_SERVER__API_KEYS: ${LITEMEM_SERVER__API_KEYS:?create one with `litemem key new` and set it in .env}
+      LITEMEM_TEST_DATABASE_URL: ""  # the host's test database is not the container's
+      # Ollama on the host, unless .env points elsewhere (a host's 127.0.0.1 is not the container's).
+      LITEMEM_EMBEDDING__BASE_URL: ${LITEMEM_DOCKER_EMBEDDING_URL:-http://host.docker.internal:11434}
+      LITEMEM_LLM__BASE_URL: ${LITEMEM_DOCKER_LLM_URL:-http://host.docker.internal:11434/v1}
+volumes:
+  db:

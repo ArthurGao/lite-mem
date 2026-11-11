@@ -433,5 +433,12 @@ class PgStore:
         except psycopg.OperationalError as exc:
             raise StoreError(f"PostgreSQL failed: {exc}") from exc
 
+    def ping(self) -> None:
+        try:
+            with self._pool.connection() as conn:
+                conn.execute("SELECT 1")
+        except psycopg.Error as exc:
+            raise StoreError(f"PostgreSQL failed: {exc}") from exc
+
     def close(self) -> None:
         self._pool.close()

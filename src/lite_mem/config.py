@@ -134,6 +134,24 @@ class SearchConfig(BaseModel):
     low_confidence_factor: float = Field(default=0.8, ge=0, le=1)
 
 
+class ApiKey(BaseModel):
+    """One API key of the HTTP service (design §7). Only sha256(secret) is configured; the token
+    `lm_<id>_<secret>` is shown once by `litemem key new`. `namespaces` are globs
+    (`steward/*`): the key reaches those namespaces and no other."""
+
+    id: Annotated[str, StringConstraints(pattern=r"^[a-z0-9-]{1,32}$")]
+    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    namespaces: list[str] = Field(min_length=1)
+
+
+class ServerConfig(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = Field(default=8710, gt=0, lt=65536)
+    # LITEMEM_SERVER__API_KEYS='[{"id": …, "sha256": …, "namespaces": [...]}]'. None configured:
+    # the service only serves loopback clients and `litemem serve` refuses any other bind address.
+    api_keys: list[ApiKey] = Field(default_factory=list)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="LITEMEM_",
@@ -151,3 +169,4 @@ class Settings(BaseSettings):
     llm: LLMConfig = LLMConfig()
     search: SearchConfig = SearchConfig()
     pipeline: PipelineConfig = PipelineConfig()
+    server: ServerConfig = ServerConfig()

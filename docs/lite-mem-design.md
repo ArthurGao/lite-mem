@@ -257,7 +257,7 @@ lite-mem/
 | S5 评测 | 合成对话集与标注、`litemem eval`、mem0 对照脚本 | 用本地 Ollama 跑出对比表：只新增 vs 消解、两版抽取提示词、lite-mem vs mem0；结果记进 KB |
 | S5b 敏感信息 | 写入前由代码识别密码、卡号、证件号等（规则 + 可选的模型判断），按配置拒绝或打码；事件记下原因 | 合成集里的银行卡密码不再成为记忆；正常数字（电话分机、年份）不误伤；eval 重跑 |
 | S6 HTTP 服务 | FastAPI、API key、Problem Details、`Idempotency-Key`、Dockerfile、compose、CI 构建镜像 | 未授权 401，越权 namespace 403；`docker compose up` 后完成 add → search → history；库和 API 结果一致 |
-| S7 整合与遗忘 | 合并、归纳、过期、衰减遗忘；`litemem maintain` | FakeLLM 测试：相似记忆合并成一条且历史为 MERGE；过期的检索不到但 `as_of` 可见；用 eval 定合并阈值 |
+| S7 整合与遗忘 | 合并、归纳、过期、衰减遗忘；`litemem maintain`；复合事实被取代时不丢没变的部分（S6 发现） | FakeLLM 测试：相似记忆合并成一条且历史为 MERGE；过期的检索不到但 `as_of` 可见；用 eval 定合并阈值 |
 | S7b SQLite 后端（可选） | `SqliteStore`（sqlite-vec + FTS5），嵌入式运行 | 同一套 Store 合约测试在 PG 和 SQLite 上都通过 |
 | S8 收尾 | 整个引擎的 `/simplify` 和 Codex 审查，修复，重跑全部检查 | 审查结论记录在案 |
 | S9 接入 llm-steward | `LiteMemProvider`（库和 HTTP 两种）；llm-steward 的事件映射（UPDATE、DELETE）；合约测试；更新 llm-steward 设计文档 | llm-steward 的记忆合约测试在两种接入方式下都通过；手动端到端：对话 → 记忆 → 更新 → 检索 |
@@ -301,6 +301,10 @@ lite-mem/
   - 取舍：不带数字的密码（"密码是 tiger"）识别不到——要识别就会误伤"forgot her password"这类普通事实；识别靠规则，不靠模型判断（模型判断可以以后作为 `mask` 的补充，不能替代规则）。
   - Codex：High 带空格的值（"PIN 是 4829 1038"）漏掉——值后面允许跟最多三段带数字的片段；High `update` 的 reason 原样进历史——改在 `_apply` 里给所有事件的 reason 打码，模型写的消解理由也覆盖；Medium 符合 Luhn 的订单号被当成卡号——加卡组织号段，并排除前面标着订单 / 运单 / 发票的数字；Medium 重叠检查是平方复杂度——改为按字符标记，测试用两万处匹配限时 5 秒（平方实现要七秒以上）。每条都先有失败的测试。
   - /simplify：自己做（diff 约 150 行生产代码）：`keep` 的判断收进一个 `_secrets` 帮助函数；`Policy` 类型在配置里复用，不重复写 Literal。
+- **S6（2026-11-12）**：FastAPI 服务（`litemem serve`，extra `server`，`127.0.0.1:8710`）。API key 写在配置里（`LITEMEM_SERVER__API_KEYS`，只存 sha256，`litemem key new` 生成，token 只显示一次），按 glob 限定 namespace（请求头 `X-LiteMem-Namespace`，默认 `LITEMEM_NAMESPACE`）；没配 key 时只服务直连的回环客户端，`serve` 拒绝绑定其他地址；错误一律 Problem Details，上游错误只记（脱敏的）日志不返回，校验错误不回显输入；`Idempotency-Key`；`/health` 只查数据库（给频繁的探针），`/health?deep=true` 再做一次 embedding（S9 的 provider 用）。存储、embedding、LLM 客户端只建一次（`factory.Components`），每个 namespace 一个轻量引擎。Dockerfile（非 root）、`deploy/compose.yaml`（自带 PG，Ollama 在宿主机，`.env` 整个传进容器）、CI 构建并启动镜像。验收：`docker compose up` 后用 curl 走了 401 / 403、add → search → history、同一幂等键重放，容器里用库的 CLI 读到同样的结果；用真实 qwen3 写入"搬到 Auckland"，判成 SUPERSEDE（91 秒）。
+  - 验收中发现：被取代的是一条复合事实（"住 Wellington，是护士"），整条失效后"护士"也跟着没了。事实要拆得更原子，或取代时保留没变的部分——放进 S7。
+  - /simplify 后：共享组件（原来每个 namespace 一套 HTTP 客户端、一次维度探测，而且建引擎时持有全局锁，第一次用某个 namespace 会卡住所有请求）——改为 `Components` + 按 namespace 加锁、已建好的不加锁读；健康检查不经过 namespace，Docker 每 10 秒的探针不再做 embedding（原来会让 Ollama 永远不卸载模型）；Store 加 `ping()`；去掉自定义的 `Problem` 异常，改用 `HTTPException`；namespace 检查改成一条直线（缺 namespace 一律 400）；compose 用 `env_file` 把 `.env` 全部传进去（原来只列了几个变量，其他设置在容器里悄悄不生效）；CI 不只构建镜像，还启动它；测试里的假引擎收成一个 helper。没做：服务只开已存在的 namespace（S9 里 llm-steward 的 namespace 是动态的，key 的 glob 就是授权边界）；连接池大小可配（事务很短，这个规模下只会排队）；Docker / CI 层缓存（收益小）。
+  - Codex：High 没配 key 时信任直接对端，本机的反向代理会让所有请求看起来都来自回环——没配 key 时，带 `Forwarded` / `X-Forwarded-For` / `X-Real-IP` 的请求一律拒绝，要放到代理后面就必须配 key；Medium 未预料的异常绕过 Problem Details——加兜底 handler，返回通用 500，日志脱敏。都先有失败的测试（变异检查：去掉对应代码，测试变红）。
 
 ## 13. 待确认
 

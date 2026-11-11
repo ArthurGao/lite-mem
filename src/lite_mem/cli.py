@@ -119,6 +119,49 @@ def erase_command(
         typer.echo(f"erased {engine.erase(user)} memories of {user}")
 
 
+key_app = typer.Typer(no_args_is_help=True, help="API keys of the HTTP service")
+app.add_typer(key_app, name="key")
+
+
+@key_app.command("new")
+def key_new(
+    key_id: Annotated[str, typer.Argument(help="a name for the key: a-z, 0-9, -")],
+    namespace: Annotated[
+        list[str], typer.Option("--namespace", "-n", help="namespace glob it reaches (repeatable)")
+    ],
+) -> None:
+    """Make a key: prints the token (shown once) and the entry for LITEMEM_SERVER__API_KEYS."""
+    from pydantic import ValidationError
+
+    from lite_mem.server.auth import new_key
+
+    try:
+        token, entry = new_key(key_id, namespace)
+    except ValidationError as exc:
+        _fail(f"invalid key: {exc.errors()[0]['msg']}")
+    typer.echo(f"token (shown once): {token}")
+    typer.echo("add this entry to LITEMEM_SERVER__API_KEYS (a JSON list):")
+    typer.echo(entry.model_dump_json())
+
+
+@app.command()
+def serve(
+    host: Annotated[str | None, typer.Option(help="bind address (default 127.0.0.1)")] = None,
+    port: Annotated[int | None, typer.Option(help="port (default 8710)")] = None,
+) -> None:
+    """Run the HTTP service (extra: server)."""
+    import uvicorn
+
+    from lite_mem.server.app import create_app
+    from lite_mem.server.auth import is_loopback
+
+    settings = Settings()
+    host = host or settings.server.host
+    if not settings.server.api_keys and not is_loopback(host):
+        _fail(f"no API keys configured: refusing to listen on {host}; set LITEMEM_SERVER__API_KEYS")
+    uvicorn.run(create_app(settings), host=host, port=port or settings.server.port)
+
+
 @app.command("eval")
 def eval_command(
     variant: Annotated[

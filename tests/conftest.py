@@ -12,6 +12,10 @@ from psycopg import sql
 
 from lite_mem.db import migrate
 from lite_mem.engine import MemoryEngine
+from lite_mem.extract import RuleExtractor
+from lite_mem.factory import Components
+from lite_mem.resolve import AddOnlyResolver
+from lite_mem.stores.base import Store
 from lite_mem.stores.pg import PgStore
 from lite_mem.testing import FakeEmbedder
 
@@ -81,3 +85,13 @@ def clock() -> Clock:
 @pytest.fixture
 def engine(store: PgStore, clock: Clock) -> MemoryEngine:
     return MemoryEngine(store, "app", FakeEmbedder(), clock=clock)
+
+
+def fake_components(store: Store) -> Components:
+    """What the CLI and the HTTP service share, with fakes: no model anywhere (each user message
+    is one fact, every fact is added)."""
+    return Components(store, FakeEmbedder(), RuleExtractor(), AddOnlyResolver())
+
+
+def fake_engine(store: Store, namespace: str = "app") -> MemoryEngine:
+    return fake_components(store).engine(namespace)
