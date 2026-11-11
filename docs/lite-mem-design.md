@@ -305,6 +305,7 @@ lite-mem/
   - 验收中发现：被取代的是一条复合事实（"住 Wellington，是护士"），整条失效后"护士"也跟着没了。事实要拆得更原子，或取代时保留没变的部分——放进 S7。
   - /simplify 后：共享组件（原来每个 namespace 一套 HTTP 客户端、一次维度探测，而且建引擎时持有全局锁，第一次用某个 namespace 会卡住所有请求）——改为 `Components` + 按 namespace 加锁、已建好的不加锁读；健康检查不经过 namespace，Docker 每 10 秒的探针不再做 embedding（原来会让 Ollama 永远不卸载模型）；Store 加 `ping()`；去掉自定义的 `Problem` 异常，改用 `HTTPException`；namespace 检查改成一条直线（缺 namespace 一律 400）；compose 用 `env_file` 把 `.env` 全部传进去（原来只列了几个变量，其他设置在容器里悄悄不生效）；CI 不只构建镜像，还启动它；测试里的假引擎收成一个 helper。没做：服务只开已存在的 namespace（S9 里 llm-steward 的 namespace 是动态的，key 的 glob 就是授权边界）；连接池大小可配（事务很短，这个规模下只会排队）；Docker / CI 层缓存（收益小）。
   - Codex：High 没配 key 时信任直接对端，本机的反向代理会让所有请求看起来都来自回环——没配 key 时，带 `Forwarded` / `X-Forwarded-For` / `X-Real-IP` 的请求一律拒绝，要放到代理后面就必须配 key；Medium 未预料的异常绕过 Problem Details——加兜底 handler，返回通用 500，日志脱敏。都先有失败的测试（变异检查：去掉对应代码，测试变红）。
+  - 提交后的自动安全审查：没配 key 时，本机浏览器里的网页可以借 DNS rebinding 把请求打到 `127.0.0.1:8710`——没配 key 时还要求 Host 是回环名字（`localhost`、`127.0.0.1`、`[::1]`），并拒绝带 `Origin` 的请求（浏览器发的）。
 
 ## 13. 待确认
 

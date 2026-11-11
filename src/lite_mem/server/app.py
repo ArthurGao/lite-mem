@@ -3,7 +3,8 @@ built once (`factory.Components`); each namespace gets a light engine on them, m
 
 Every route but `/health` needs an API key that reaches the request's namespace (header
 `X-LiteMem-Namespace`, default `LITEMEM_NAMESPACE`). With no key configured, only loopback clients
-are served, and never a proxied request (a local proxy would make every client look local).
+are served: never a proxied request (a local proxy makes every client look local) nor a browser's
+(an Origin header, or a Host that is not a loopback name: DNS rebinding).
 Errors are Problem Details (RFC 9457); an upstream failure's message is logged (redacted), never
 returned."""
 
@@ -42,7 +43,6 @@ from lite_mem.types import Memory, MemoryType, Message, Scope
 
 log = logging.getLogger("lite_mem.server")
 PROBLEM = "application/problem+json"
-_PROXY_HEADERS = ("forwarded", "x-forwarded-for", "x-real-ip")
 
 
 def problem(
@@ -110,8 +110,8 @@ def create_app(settings: Settings, components: Components | None = None) -> Fast
                 raise HTTPException(
                     401, "a valid API key is required", {"WWW-Authenticate": "Bearer"}
                 )
-        elif any(h in request.headers for h in _PROXY_HEADERS) or not auth.is_loopback(
-            request.client.host if request.client else None
+        elif not auth.local_request(
+            request.client.host if request.client else None, request.headers
         ):
             raise HTTPException(403, "no API keys are configured: only direct loopback clients")
         namespace = x_litemem_namespace or settings.namespace

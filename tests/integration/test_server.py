@@ -21,6 +21,7 @@ from tests.conftest import fake_components
 
 STEWARD_TOKEN, STEWARD_KEY = new_key("steward", ["steward/*"])
 APP_TOKEN, APP_KEY = new_key("app", ["app"])
+LOCAL = "http://127.0.0.1:8710"
 
 
 def _settings(keys: bool = True) -> Settings:
@@ -200,15 +201,30 @@ def test_health_needs_no_key_and_is_cheap_unless_deep(
 
 
 def test_without_keys_only_direct_loopback_clients_are_served(components: Components) -> None:
-    local = _client(components, keys=False, client=("127.0.0.1", 50000))
+    local = _client(components, keys=False, client=("127.0.0.1", 50000), base_url=LOCAL)
     assert local.get("/v1/memories", params={"user_id": "ada"}).status_code == 200
-    remote = _client(components, keys=False, client=("10.0.0.5", 50000))
+    remote = _client(components, keys=False, client=("10.0.0.5", 50000), base_url=LOCAL)
     assert _is_problem(remote.get("/v1/memories", params={"user_id": "ada"}), 403)
     # a local reverse proxy makes every client look local: a forwarded request is refused
     proxied = local.get(
         "/v1/memories", params={"user_id": "ada"}, headers={"X-Forwarded-For": "203.0.113.9"}
     )
     assert _is_problem(proxied, 403)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Host": "attacker.example:8710"},  # DNS rebinding: a web page's name now points here
+        {"Origin": "https://attacker.example"},  # any browser page, even same-host
+    ],
+)
+def test_without_keys_a_browser_page_cannot_reach_the_service(
+    components: Components, headers: dict[str, str]
+) -> None:
+    local = _client(components, keys=False, client=("127.0.0.1", 50000), base_url=LOCAL)
+    r = local.get("/v1/memories", params={"user_id": "ada"}, headers=headers)
+    assert _is_problem(r, 403)
 
 
 def test_a_missing_namespace_is_400(components: Components) -> None:

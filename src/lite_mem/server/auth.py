@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import ipaddress
 import secrets
+from collections.abc import Mapping
 from fnmatch import fnmatchcase
 
 from lite_mem.config import ApiKey
@@ -40,6 +41,22 @@ def authenticate(header: str | None, keys: list[ApiKey]) -> ApiKey | None:
 
 def allows(key: ApiKey, namespace: str) -> bool:
     return any(fnmatchcase(namespace, pattern) for pattern in key.namespaces)
+
+
+_PROXY_HEADERS = ("forwarded", "x-forwarded-for", "x-real-ip")
+
+
+def local_request(client: str | None, headers: Mapping[str, str]) -> bool:
+    """A request the keyless service may serve: from a loopback peer, not forwarded by a proxy,
+    not sent by a browser page (Origin), and addressed to a loopback name (Host) — a page whose
+    domain was rebound to 127.0.0.1 still sends its own domain as Host."""
+    if not is_loopback(client) or "origin" in headers:
+        return False
+    if any(h in headers for h in _PROXY_HEADERS):
+        return False
+    host = headers.get("host", "")
+    name = host[1 : host.index("]")] if host.startswith("[") and "]" in host else host.split(":")[0]
+    return is_loopback(name)
 
 
 def is_loopback(host: str | None) -> bool:
