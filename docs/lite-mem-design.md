@@ -286,7 +286,7 @@ lite-mem/
 | S7b SQLite 后端（可选） | `SqliteStore`（sqlite-vec + 自己的倒排），嵌入式运行 | 同一套 Store 合约测试在 PG 和 SQLite 上都通过 |
 | S8 收尾 | 整个引擎的 `/simplify` 和 Codex 审查，修复，重跑全部检查 | 审查结论记录在案 |
 | S9 接入 llm-steward | `LiteMemProvider`（库和 HTTP 两种）；llm-steward 的事件映射（UPDATE、DELETE）；合约测试；更新 llm-steward 设计文档 | llm-steward 的记忆合约测试在两种接入方式下都通过；手动端到端：对话 → 记忆 → 更新 → 检索 |
-| S10 记忆图谱（以后） | 实体和关系的抽取与查询 | 先写设计，再看 eval 的收益决定做不做 |
+| S10 记忆图谱（以后） | 实体和关系的抽取与查询 | 先测多跳的缺口（2026-11-12 已测，见下面的 S10 记录）；图谱暂不做，先做查询时的二轮检索 |
 
 ### 阶段记录
 
@@ -352,6 +352,11 @@ lite-mem/
   - Codex：P1 派生事实（抽取器、合并、remainder）只筛内容——改成和调用方的事实走同一套筛查（`_stated_fact`），会被拒绝的派生事实直接丢掉；P2 打开失败时删掉锁，可能让等锁的线程和新来的线程各拿一把锁、同时建同一个 namespace——namespace 名字在拿锁之前校验，锁从不删除。都先有失败的测试（变异检查）。S8b 提交后的自动安全审查：namespace 上限只计已打开的，同时打开几个新名字时都能先通过检查——打开中的也计入（先占名额，失败退还），并发测试先红后绿。不改：P2 两个 store 在分数恰好落在第 9 位小数的舍入中点时可能排序不同（PG 先把 float 转 numeric 再舍入，Python 对 float 舍入）——要同时恰好在中点又恰好并列，实际不会发生，为此统一舍入规则得不偿失。
 - **S9（2026-11-12）**：llm-steward 的 `LiteMemProvider`（在 llm-steward 仓库：`providers/litemem.py`，HTTP 默认、进程内可选，合约测试在真 lite-mem 上跑）。S9 开始前要定的三件事，定得尽量小，两边的事件契约都不用扩：(1) 引擎消解冲突，llm-steward 镜像它的决定：SUPERSEDE 作为带 `replaces` 的 ADD、DELETE 照旧，在一个治理事务里取代或退役镜像，不再跑 llm-steward 自己的补偿；(2) 不在 llm-steward 的 namespace 上跑 `maintain`（生效期和审核归 llm-steward），所以 MERGE / EXPIRE 不会出现，事件游标留到以后；(3) 延迟和 llm-steward worker 的 30 秒上限：靠幂等键而不是延长租约——推断写入带批次最后一个 episode 的 id，超时的调用在 lite-mem 里照样提交，重试直接重放；Syncer 推送治理过的记忆用 `remember`（键是 llm-steward 的记忆 id）。lite-mem 这边代码不用改（`remember`、深度健康检查、列表分页、`factory.Engines` 在 S8 都已备好）。
   - 用真 qwen3 手动走一遍（lite-mem 在 8710，llm-steward 用临时 SQLite）时发现两处，各自先写了失败的测试：(a) lite-mem：一条原子的 "Lives in Wellington" 被取代时，模型给了 remainder "Works as a nurse"——它从没说过、而且已经单独存着，于是存了两遍。代码决定：remainder 至少一半的词要出现在旧事实里，并且不能和这个 scope 已有的相关记忆或新事实本身重复。(b) llm-steward：第一段对话的任务超时（第一次调用要加载模型）后，第二段先处理完（lite-mem 已把第一段的城市取代），第一段重试时 lite-mem 按键重放它当时的 ADD，llm-steward 就把一条 lite-mem 已经不再持有的事实镜像成了有效记忆。修在 llm-steward：引擎会消解冲突时，只镜像引擎仍持有的事实，不管任务按什么顺序完成，镜像都等于引擎当前的状态。也顺带看到：本机的应用 schema 还没迁移就起了服务，lite-mem 返回 500，llm-steward 正确地记为不可用并重试（Docker 镜像启动时会自己迁移）。
+- **S10 门槛（2026-11-12，只测量、没改代码）**：两跳问题要不要记忆图谱。数据 `eval/multihop.json`：两个虚构用户（英文、中文）各 30 条原子记忆、各 10 个问题，每题要两条记忆——一条说"谁/什么是我的 X"，另一条说 X 的事、但不重复"我的 X"（"Lily is my older sister." + "Lily works as a pharmacist at the night clinic."）。记忆原样写入（不经过模型），bge-m3，SQLite；脚本 `eval/multihop.py`，结果 `eval/results/2026-11-12-s10-multihop.json`。
+  - 基线：两条都进前 k 的 top 3 / 5 / 10 是 13 / 13 / 14（共 20）；第一跳 19/20，第二跳只有 14–15。漏掉的都是第二跳：问题里没有它的词，而"My …"开头的其他记忆在向量和 BM25 上都更像问题，top 10 也挤不进去（每个用户才 30 条）。缺口是真的。
+  - 不建图的做法先试：第二轮用第一轮前 m 条命中的原文各检索一次（各取前 3），排在第一轮前 k/2+1 条之后。k=5、m=1 就到 19/20（m=2、k=10 也是 19）。剩下那题第二轮里 "Biscuit is Lily's puppy" 排在 pharmacist 前面；只用名字 "Lily" 检索它就进前 3——按实体名追一轮比按整句好。
+  - 决定：**图谱暂不做**。图谱在这里做的事（从"我的姐姐"走到"Lily"再到 Lily 的事）二轮检索已经做到大部分，而且不用在写入时抽实体和关系、不用新表、不用处理实体合并；第一轮的前 k/2+1 条不变（k=5 即前 3，单跳的 hit@3 不会变；第 4、5 名可能被换掉）。代价：每次检索多 m 次 embedding。
+  - 证据薄：20 题、合成、两跳的连接都是一个名字；三跳、同名不同人、代词指代没测。下一步（要 owner 定是否做，因为是检索接口的新选项）：`search(..., follow_up=m)`，默认关闭，按实体名或整句追一轮，在这份数据和 S5 的合成集上对比后再定默认值。
 
 ## 13. 待确认
 
