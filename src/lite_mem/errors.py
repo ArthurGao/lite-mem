@@ -10,7 +10,14 @@ from typing import ClassVar
 import psycopg
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
-_CREDENTIALS = re.compile(r"(?<=://)[^\s/@]+@|(?<=password=)('[^']*'|[^\s&]+)", re.IGNORECASE)
+# (pattern, replacement) for free text: a URL's user:password@; a password in a URL query (it
+# ends at the next parameter); a key=value password (quoted, or up to the next space: it may
+# itself contain '&').
+_CREDENTIALS = (
+    (re.compile(r"(://)[^\s/@]+@"), r"\1***@"),
+    (re.compile(r"([?&](?:ssl)?password=)[^\s&]+", re.IGNORECASE), r"\1***"),
+    (re.compile(r"((?<![?&\w])(?:ssl)?password=)('[^']*'|\S+)", re.IGNORECASE), r"\1***"),
+)
 
 
 def redact(text: str) -> str:
@@ -26,7 +33,9 @@ def redact(text: str) -> str:
             if "password" in name and params[name]:
                 params[name] = "***"
         return make_conninfo("", **params)
-    return _CREDENTIALS.sub(lambda m: "***@" if m.group().endswith("@") else "***", text)
+    for pattern, replacement in _CREDENTIALS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 class LiteMemError(Exception):

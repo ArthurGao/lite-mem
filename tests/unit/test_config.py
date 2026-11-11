@@ -53,6 +53,8 @@ def test_schema_must_be_an_identifier() -> None:
         ("postgresql://h/db?password=secret", "secret"),
         ("host=h sslpassword=secret dbname=x", "secret"),
         ("postgresql://h/db?sslpassword=secret", "secret"),
+        ("failed: host=h password=ab&cd dbname=x", "cd"),
+        ("failed: postgresql://h/db?password=ab&sslmode=require", "ab"),
         ("connection to postgresql://u:secret@h/db failed: timeout", "secret"),
     ],
 )
