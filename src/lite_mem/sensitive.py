@@ -58,14 +58,12 @@ class Finding:
 
 
 def find(text: str) -> list[Finding]:
-    """Every secret in `text`, in order, without overlaps (a more specific kind wins)."""
+    """Every secret in `text`, in order of position. Findings may overlap (a card number inside a
+    credential value): `mask` hides their union, so no part of a longer match stays visible."""
     found: list[Finding] = []
-    taken = bytearray(len(text))  # 1 where a finding already covers the character
 
     def take(kind: Kind, start: int, end: int) -> None:
-        if not any(taken[start:end]):
-            taken[start:end] = b"\x01" * (end - start)
-            found.append(Finding(kind, start, end))
+        found.append(Finding(kind, start, end))
 
     for m in _API_KEY.finditer(text):
         take("api_key", m.start(), m.end())
@@ -79,14 +77,22 @@ def find(text: str) -> list[Finding]:
         value = m.group(1)
         if len(value) >= 4 and any(c.isdigit() for c in value):
             take("credential", m.start(1), m.end(1))
-    return sorted(found, key=lambda f: f.start)
+    return sorted(found, key=lambda f: (f.start, -f.end))
 
 
 def mask(text: str) -> str:
-    """`text` with each secret value replaced by [redacted]."""
-    for f in reversed(find(text)):
-        text = text[: f.start] + MASK + text[f.end :]
-    return text
+    """`text` with each secret replaced by [redacted]; overlapping secrets become one."""
+    spans: list[list[int]] = []
+    for f in find(text):
+        if spans and f.start <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], f.end)
+        else:
+            spans.append([f.start, f.end])
+    parts, last = [], 0
+    for start, end in spans:
+        parts += [text[last:start], MASK]
+        last = end
+    return "".join(parts) + text[last:]
 
 
 def _card(number: str, before: str) -> bool:

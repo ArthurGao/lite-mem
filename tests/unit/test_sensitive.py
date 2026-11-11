@@ -65,3 +65,5 @@ def test_mask_hides_only_the_secret_value() -> None:
     assert mask("card 4111 1111 1111 1111 expires soon") == "card [redacted] expires soon"
     assert mask("no secrets here") == "no secrets here"
     assert mask("我的 PIN 是 4829 1038，别忘了") == "我的 PIN 是 [redacted]，别忘了"
+    # overlapping matches: the union is hidden, no tail of the longer one stays visible
+    assert mask("PIN: 4111-1111-1111-1111x9876 ok") == "PIN: [redacted] ok"
