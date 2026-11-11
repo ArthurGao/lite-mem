@@ -255,6 +255,7 @@ lite-mem/
 | S3 检索 | 向量 + 自写 BM25（jieba）+ RRF；重要性、衰减、置信度权重；scope、类型、metadata 过滤 | BM25 与手算一致；融合顺序正确；共享记忆和自己的记忆都能找到，别人的找不到；`-m ollama` 真实往返 |
 | S4 抽取与冲突消解 | `Extractor`、`Resolver`（从 llm-steward 移植，提示词放进 `prompts/`）；`add(infer=true)` 完整流水线；事件带出处 | FakeLLM 测试：北京→上海是 UPDATE（旧的失效）、重复是 NOOP、越界目标按 ADD；整批一个事务；重试（同一幂等键）不会再调模型 |
 | S5 评测 | 合成对话集与标注、`litemem eval`、mem0 对照脚本 | 用本地 Ollama 跑出对比表：只新增 vs 消解、两版抽取提示词、lite-mem vs mem0；结果记进 KB |
+| S5b 敏感信息 | 写入前由代码识别密码、卡号、证件号等（规则 + 可选的模型判断），按配置拒绝或打码；事件记下原因 | 合成集里的银行卡密码不再成为记忆；正常数字（电话分机、年份）不误伤；eval 重跑 |
 | S6 HTTP 服务 | FastAPI、API key、Problem Details、`Idempotency-Key`、Dockerfile、compose、CI 构建镜像 | 未授权 401，越权 namespace 403；`docker compose up` 后完成 add → search → history；库和 API 结果一致 |
 | S7 整合与遗忘 | 合并、归纳、过期、衰减遗忘；`litemem maintain` | FakeLLM 测试：相似记忆合并成一条且历史为 MERGE；过期的检索不到但 `as_of` 可见；用 eval 定合并阈值 |
 | S7b SQLite 后端（可选） | `SqliteStore`（sqlite-vec + FTS5），嵌入式运行 | 同一套 Store 合约测试在 PG 和 SQLite 上都通过 |
@@ -280,6 +281,22 @@ lite-mem/
   - 真实模型暴露的问题（S5 量化）：qwen3:8b 不遵守"用对方的语言写"（中文输入写成英文事实）；一句话抽成两条近义事实；一次往返 100–300 秒（思考模式）。处理：语言由代码判断后显式传给模型（`LANGUAGE`）；同批事实互相比对（见下）；思考模式开关留给 S5 实测。
   - Codex：High 模型调用失败时把上游报错原文放进 `ModelError`（可能带 key、授权头、带凭据的 URL）——改为只给错误类型，原异常留作 cause；Medium 空回复（没有 choice、没有工具块）抛 `IndexError`——改为 `ModelError`；Medium 同批两条事实指向同一条旧记忆，第二条降级为新增，留下矛盾的当前事实——改为逐条消解，本批已接受的事实作为候选（批内临时 id）交给后面的事实，后者可以判 NOOP 或在批内取代前者并继承它对旧记忆的取代，指向已被本批取代的旧记忆时改为指向取代它的那条；Medium 同一幂等键的并发请求都会调一遍模型——不改：只写一次，多花的是成本，杜绝它要跨模型调用持锁，不值得。
   - /simplify 后：引擎核对目标必须在候选里且仍是当前，每次降级都写原因（消解器只解析 id）——测试证明它挡住了"消解器指向同 namespace 里别的用户的记忆"；两条写路径共用 `_commit`；客户端只注入一个、两种 vendor 共用回复校验、Anthropic 客户端按目标缓存（原来两个角色会共用第一个）；提示词名、消解方式（`llm` / `add_only`）、相关记忆条数可配置（`LITEMEM_PIPELINE__*`），S5 直接切换；配置给定向量维度就不再探测；CLI 只开一个连接；内部查相关记忆时少取候选。没做：改用 SDK 的 `parse()`（手写的 strict schema 对现有模型够用，换了要连测试替身一起改）；并行调用消解（逐条消解需要顺序）；一次调用消解整批（S5 作为另一种实现对比）；出处拆成"抽取者 / 决定者"两个字段、返回结果里带 NOOP（S9 定事件契约时再看）；思考模式开关（S5 实测）。
+- **S5（2026-11-12）**：合成对话集 `eval/dataset.json`（三个虚构的人：中文、英文、中英混杂；11 段对话、19 条应记住、7 条应忘掉、11 个问题），`litemem eval`（lite-mem 的 variant：`resolve`、`add_only`、`terse_prompt`、`thinking`；`--mem0` 加 mem0 2.2.1 对照；`--out` 存 JSON），每个角色可设 `reasoning`（以 `reasoning_effort` 发出；qwen3 关掉思考后一次调用约 20 秒 → 1 秒，Ollama `/v1` 不认 `think:false`）。
+  - 结果（qwen3:8b + bge-m3，本地 Ollama，跑一次，19/7/11 条检查；文件 `eval/results/2026-11-12-s5.json`，详细分析在 KB `projects/lite-mem/reference/eval-results.md`）：
+
+    | 系统 | 记住 | 该忘没忘 | hit@3 | 记忆数 | 秒/次写入 |
+    | --- | --- | --- | --- | --- | --- |
+    | resolve（关思考） | 16/19 | 4/7 | 8/11 | 21 | 9.9 |
+    | add_only（关思考） | 18/19 | 6/7 | 10/11 | 25 | 3.1 |
+    | terse_prompt（关思考） | 18/19 | 2/7 | 11/11 | 15 | 7.6 |
+    | thinking（开思考） | 19/19 | 1/7 | 11/11 | 18 | 46.9 |
+    | mem0 2.2.1 | 19/19 | 7/7 | 11/11 | 22 | 33.2 |
+
+    结论：冲突消解是"改了的事实不留旧值"的来源（mem0 7/7 全留，lite-mem 开思考只留 1/7）；qwen3 关掉思考时消解会出错（把"住在上海"判成"住在北京"的重复而丢掉）；简短的抽取提示词对不思考的模型更好；所有系统（含 mem0）都存下了银行卡密码；NOOP 不留事件，查不到事实为什么丢了。默认值不改（一次运行、19 条检查不足以换默认），terse 提示词待第二次运行确认。
+  - 由此加入的后续：写入前在代码里过滤敏感信息（密码、卡号），不靠提示词；NOOP 决定记在写入结果里（S9 定事件契约时）；S7 加整合后重跑。
+  - 自己发现的：mem0 2.2.1 用 ollama embedder 时要 `ollama` 包但没声明依赖，第一次长跑在 lite-mem 跑完 12 分钟后才在 mem0 初始化时崩溃、结果全丢——eval 依赖里加上 `ollama==0.6.3`，并改为先初始化 mem0 再跑（测试覆盖）；CI 的测试库密码是 `postgres`，脱敏后的 `postgresql://postgres:***@` 总会包含它，"输出里没有密码"的断言必然失败——CI 换成不会在输出里巧合出现的密码（`363b770`）。
+  - Codex：P1 stale 评分只要记忆里提到新值就放过旧值（"住 Auckland 和 Wellington" 不算 stale）——`unless` 改为"旧值已过去"的措辞（moved from、以前、used to），先红后绿；P1 mem0 对照按固定的 user id 在固定的 `mem0_eval` 里删数据，会删到别人的——每次运行用自己的 collection 和 history 目录，结束时只删自己的；P2 `get_all` 上限 1000、`MEM0_DIR` 复用旧 history——随上一条一起解决；P2 角色的 `reasoning` 清不回端点默认——加 `"default"`。
+  - /simplify 后：mem0 对照的模型、端点、维度改从 `Settings` 读（原来写死，"同一个本地模型"只是巧合）；`--out` 记录数据集 sha256、git sha、各系统的设置（不含数据库 URL，密钥遮盖）和结果，KB 里的数字能对回到那次运行；`Report` 带 k、比例共用一个函数、CLI 复用 `_engine`。没做（留给 S7，那时 `maintain` 的接口才定）：对话带时间、`System` 加 maintain 钩子、`Report` 加合并数和每次写入的模型调用数；评分拆成可替换的 `Scorer`（关键词 / LLM 评判，接 LoCoMo 时需要）；variant 放进数据文件、命令行覆盖设置（阈值扫描时需要）；按用户并发跑（取决于 Ollama 是否并行）。
 
 ## 13. 待确认
 

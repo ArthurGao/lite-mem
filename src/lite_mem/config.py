@@ -34,6 +34,10 @@ OwnSchema = Annotated[
 
 Role = Literal["extract", "resolve", "consolidate"]
 LLMProvider = Literal["openai", "anthropic"]
+# Sent as `reasoning_effort` to OpenAI-compatible endpoints. "none" turns qwen3's thinking off on
+# Ollama /v1: 20 s -> 1 s for one short extraction on this machine (measured 2026-11-12).
+# "default" (in a role's override) clears an inherited setting: send nothing, the endpoint decides.
+Reasoning = Literal["none", "low", "medium", "high", "default"]
 
 
 class EmbeddingConfig(BaseModel):
@@ -65,6 +69,7 @@ class RoleOverride(BaseModel):
     base_url: str | None = None
     api_key: SecretStr | None = None
     model: str | None = None
+    reasoning: Reasoning | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,11 @@ class ModelTarget:
     api_key: SecretStr | None
     model: str
     timeout_s: float
+    reasoning: Reasoning | None = None  # None: the endpoint's default
+
+
+def _reasoning(value: Reasoning | None) -> Reasoning | None:
+    return None if value == "default" else value
 
 
 class LLMConfig(BaseModel):
@@ -89,6 +99,7 @@ class LLMConfig(BaseModel):
     model: str = "qwen3:8b"
     roles: dict[Role, RoleOverride] = Field(default_factory=dict)
     timeout_s: float = Field(default=120.0, gt=0)
+    reasoning: Reasoning | None = None
 
     def target(self, role: Role) -> ModelTarget:
         o = self.roles.get(role, RoleOverride())
@@ -100,6 +111,7 @@ class LLMConfig(BaseModel):
             api_key=o.api_key if (o.api_key or switched) else self.api_key,
             model=o.model or self.model,
             timeout_s=self.timeout_s,
+            reasoning=_reasoning(o.reasoning if o.reasoning is not None else self.reasoning),
         )
 
 

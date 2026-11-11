@@ -87,6 +87,8 @@ class OpenAICompatibleLLM:
                     },
                 },
                 timeout=target.timeout_s,
+                # not a typed SDK argument for every model: sent as is when configured
+                extra_body={"reasoning_effort": target.reasoning} if target.reasoning else None,
             )
         except Exception as exc:  # the SDK's errors, network errors: no fallback (rule 6)
             raise _failed(role, target, exc) from exc

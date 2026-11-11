@@ -17,6 +17,9 @@ from lite_mem.types import Message, Scope
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
+# What an eval run records about each system's settings (never the database URL).
+_MODEL_FACING = {"llm", "embedding", "pipeline", "search"}
+
 
 def _fail(message: str) -> NoReturn:
     typer.echo(f"error: {redact(message)}", err=True)
@@ -47,11 +50,11 @@ Agent = Annotated[str | None, typer.Option("--agent", help="agent_id of the scop
 
 
 @contextmanager
-def _engine() -> Iterator[MemoryEngine]:
+def _engine(settings: Settings | None = None) -> Iterator[MemoryEngine]:
     """An engine from the settings; any lite-mem error ends the command with its (redacted)
     message."""
     try:
-        engine = factory.open_engine(Settings(), max_size=1)  # one command, one connection
+        engine = factory.open_engine(settings or Settings(), max_size=1)  # one connection
         try:
             yield engine
         finally:
@@ -113,3 +116,57 @@ def erase_command(
         _fail("erase deletes everything about the user and cannot be undone: add --yes")
     with _engine() as engine:
         typer.echo(f"erased {engine.erase(user)} memories of {user}")
+
+
+@app.command("eval")
+def eval_command(
+    variant: Annotated[
+        list[str] | None, typer.Option("--variant", "-v", help="lite-mem variant (repeatable)")
+    ] = None,
+    mem0: Annotated[bool, typer.Option("--mem0", help="also run mem0 2.2.1 (extra: eval)")] = False,
+    dataset: Annotated[str, typer.Option(help="the conversations")] = "eval/dataset.json",
+    k: int = 3,
+    schema: Annotated[str, typer.Option(help="where eval data lives")] = "lite_mem_eval",
+    out: Annotated[
+        str | None, typer.Option(help="also save the run as JSON (results + what produced them)")
+    ] = None,
+) -> None:
+    """Run the synthetic conversations through lite-mem variants (and mem0); print the table."""
+    from pathlib import Path
+
+    from lite_mem import eval as ev
+
+    names = variant or ["resolve", "add_only"]
+    unknown = [n for n in names if n not in ev.VARIANTS]
+    if unknown:
+        _fail(f"unknown variant(s) {unknown}; known: {sorted(ev.VARIANTS)}")
+    data, base, reports = ev.load(Path(dataset)), Settings(), []
+    used: dict[str, Any] = {}  # per system, the model-facing settings (secrets masked)
+    try:
+        with connect(base.database_url) as conn:
+            migrate(conn, schema)
+    except LiteMemError as exc:
+        _fail(str(exc))
+    mem0_system = None
+    if mem0:  # set up first: a missing dependency fails before the long lite-mem runs
+        from lite_mem.eval_mem0 import Mem0System
+
+        mem0_system = Mem0System(base)
+    try:
+        for name in names:
+            settings = ev.variant_settings(base, name, schema)
+            used[name] = settings.model_dump(mode="json", include=_MODEL_FACING)
+            with _engine(settings) as engine:
+                reports.append(ev.run(ev.LiteMemSystem(name, engine), data, k=k))
+        if mem0_system:
+            used[mem0_system.name] = base.model_dump(mode="json", include={"llm", "embedding"})
+            reports.append(ev.run(mem0_system, data, k=k))
+    finally:
+        if mem0_system:
+            mem0_system.close()
+    if out:
+        ev.save(Path(out), reports, dataset=Path(dataset), settings=used)
+    typer.echo(ev.table(reports))
+    for r in reports:
+        for miss in r.misses:
+            typer.echo(f"  {r.system}: {miss}")

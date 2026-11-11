@@ -1,0 +1,426 @@
+{
+  "about": "Synthetic conversations of three fictional people, written for lite-mem's eval (design §8). After each session: `present` lists facts that must be remembered (each as alternative keywords, any language); `stale` lists facts that must no longer be current (a current memory containing an `old` keyword and none of the `unless` keywords, which mark the old value as past (\"moved from\", \"以前\"); naming the new value is not enough, so \"lives in Auckland and Wellington\" is stale is stale). Questions are searched after the last session; a hit is a top-k memory containing any answer keyword.",
+  "users": [
+    {
+      "user_id": "xiaowang",
+      "sessions": [
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "你好，我叫小王，住在北京，在一家银行做会计。对了，我对花生过敏。"
+            }
+          ],
+          "present": [
+            [
+              "北京",
+              "Beijing"
+            ],
+            [
+              "会计",
+              "accountant"
+            ],
+            [
+              "花生",
+              "peanut"
+            ]
+          ],
+          "stale": []
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "我最近喜欢上了绿茶，每天早上都喝一杯。顺便问一下，今天天气怎么样？"
+            },
+            {
+              "role": "assistant",
+              "content": "今天晴，25度。绿茶是个好习惯！"
+            }
+          ],
+          "present": [
+            [
+              "绿茶",
+              "green tea"
+            ]
+          ],
+          "stale": []
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "跟你说一下，我上个月搬到上海了，也换了工作，现在做数据分析师。"
+            }
+          ],
+          "present": [
+            [
+              "上海",
+              "Shanghai"
+            ],
+            [
+              "数据分析",
+              "data analy"
+            ]
+          ],
+          "stale": [
+            {
+              "old": [
+                "北京",
+                "Beijing"
+              ],
+              "unless": [
+                "搬",
+                "from Beijing",
+                "moved",
+                "used to",
+                "previously",
+                "formerly",
+                "former ",
+                "no longer",
+                "switched from",
+                "以前",
+                "之前",
+                "原来",
+                "曾经",
+                "不再"
+              ]
+            },
+            {
+              "old": [
+                "会计",
+                "accountant"
+              ],
+              "unless": [
+                "转行",
+                "was an accountant",
+                "worked as an accountant",
+                "used to",
+                "previously",
+                "formerly",
+                "former ",
+                "no longer",
+                "switched from",
+                "以前",
+                "之前",
+                "原来",
+                "曾经",
+                "不再"
+              ]
+            }
+          ]
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "帮我记一下，我的银行卡密码是 482915。另外我还是每天喝绿茶。"
+            }
+          ],
+          "present": [
+            [
+              "绿茶",
+              "green tea"
+            ]
+          ],
+          "stale": [
+            {
+              "old": [
+                "482915"
+              ],
+              "unless": []
+            }
+          ]
+        }
+      ],
+      "questions": [
+        {
+          "q": "她现在住在哪个城市？",
+          "answers": [
+            "上海",
+            "Shanghai"
+          ]
+        },
+        {
+          "q": "她对什么过敏？",
+          "answers": [
+            "花生",
+            "peanut"
+          ]
+        },
+        {
+          "q": "她现在做什么工作？",
+          "answers": [
+            "数据分析",
+            "data analy"
+          ]
+        },
+        {
+          "q": "她每天早上喝什么？",
+          "answers": [
+            "绿茶",
+            "green tea"
+          ]
+        }
+      ]
+    },
+    {
+      "user_id": "emma",
+      "sessions": [
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "Hi, I'm Emma. I live in Auckland and work as a nurse on night shifts. I'm vegetarian."
+            }
+          ],
+          "present": [
+            [
+              "Auckland"
+            ],
+            [
+              "nurse"
+            ],
+            [
+              "vegetarian"
+            ]
+          ],
+          "stale": []
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "I adopted a dog last week, his name is Mo. Can you recommend a movie for tonight?"
+            },
+            {
+              "role": "assistant",
+              "content": "Paddington is a good one for dog lovers."
+            }
+          ],
+          "present": [
+            [
+              "Mo",
+              "dog"
+            ]
+          ],
+          "stale": []
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "Big news: I moved to Wellington for a job at the city hospital. Also I've started eating fish again."
+            }
+          ],
+          "present": [
+            [
+              "Wellington"
+            ],
+            [
+              "fish"
+            ]
+          ],
+          "stale": [
+            {
+              "old": [
+                "Auckland"
+              ],
+              "unless": [
+                "from Auckland",
+                "moved",
+                "left Auckland",
+                "used to",
+                "previously",
+                "formerly",
+                "former ",
+                "no longer",
+                "switched from",
+                "以前",
+                "之前",
+                "原来",
+                "曾经",
+                "不再"
+              ]
+            },
+            {
+              "old": [
+                "vegetarian"
+              ],
+              "unless": [
+                "was vegetarian",
+                "was a vegetarian",
+                "stopped",
+                "used to",
+                "previously",
+                "formerly",
+                "former ",
+                "no longer",
+                "switched from",
+                "以前",
+                "之前",
+                "原来",
+                "曾经",
+                "不再"
+              ]
+            }
+          ]
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "My roster changed, I'm on day shifts now."
+            }
+          ],
+          "present": [
+            [
+              "day shift"
+            ]
+          ],
+          "stale": [
+            {
+              "old": [
+                "night shift"
+              ],
+              "unless": [
+                "from night shift",
+                "from the night shift",
+                "was on night",
+                "used to",
+                "previously",
+                "formerly",
+                "former ",
+                "no longer",
+                "switched from",
+                "以前",
+                "之前",
+                "原来",
+                "曾经",
+                "不再"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [
+        {
+          "q": "Which city does Emma live in?",
+          "answers": [
+            "Wellington"
+          ]
+        },
+        {
+          "q": "What is her dog's name?",
+          "answers": [
+            "Mo"
+          ]
+        },
+        {
+          "q": "Does she eat fish?",
+          "answers": [
+            "fish"
+          ]
+        },
+        {
+          "q": "When does she work?",
+          "answers": [
+            "day shift"
+          ]
+        }
+      ]
+    },
+    {
+      "user_id": "li",
+      "sessions": [
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "我是 Li，software engineer，在 Shenzhen 工作，周末喜欢 hiking。"
+            }
+          ],
+          "present": [
+            [
+              "software engineer",
+              "软件工程师"
+            ],
+            [
+              "Shenzhen",
+              "深圳"
+            ],
+            [
+              "hiking",
+              "徒步",
+              "爬山"
+            ]
+          ],
+          "stale": []
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "最近在准备 AWS 认证考试，每天晚上复习两个小时。"
+            }
+          ],
+          "present": [
+            [
+              "AWS"
+            ]
+          ],
+          "stale": []
+        },
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": "AWS 考试通过了！终于可以休息一下。"
+            }
+          ],
+          "present": [
+            [
+              "AWS"
+            ]
+          ],
+          "stale": [
+            {
+              "old": [
+                "准备",
+                "preparing",
+                "studying"
+              ],
+              "unless": [
+                "通过",
+                "passed"
+              ]
+            }
+          ]
+        }
+      ],
+      "questions": [
+        {
+          "q": "他周末喜欢做什么运动？",
+          "answers": [
+            "hiking",
+            "徒步",
+            "爬山"
+          ]
+        },
+        {
+          "q": "他考了什么认证？",
+          "answers": [
+            "AWS"
+          ]
+        },
+        {
+          "q": "他在哪个城市工作？",
+          "answers": [
+            "Shenzhen",
+            "深圳"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -173,3 +173,24 @@ def test_an_empty_reply_is_a_model_error() -> None:
     llm = AnthropicLLM(LLMConfig(provider="anthropic"), no_tool)
     with pytest.raises(ModelError, match="no answer"):
         llm.structured("resolve", "s", {}, Decision)
+
+
+def test_reasoning_effort_is_sent_only_when_configured() -> None:
+    body = json.dumps({"action": "ADD", "target_id": None, "reason": "r"})
+    client, completions = _openai(body)
+    OpenAICompatibleLLM(LLMConfig(), client).structured("resolve", "s", {}, Decision)
+    config = LLMConfig.model_validate(
+        {"reasoning": "none", "roles": {"resolve": {"reasoning": "high"}}}
+    )
+    OpenAICompatibleLLM(config, client).structured("extract", "s", {}, Decision)
+    OpenAICompatibleLLM(config, client).structured("resolve", "s", {}, Decision)
+    cleared = LLMConfig.model_validate(
+        {"reasoning": "none", "roles": {"resolve": {"reasoning": "default"}}}
+    )  # a role opts back into the endpoint's own default
+    OpenAICompatibleLLM(cleared, client).structured("resolve", "s", {}, Decision)
+    assert [c["extra_body"] for c in completions.sent] == [
+        None,
+        {"reasoning_effort": "none"},
+        {"reasoning_effort": "high"},
+        None,
+    ]

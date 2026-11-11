@@ -24,7 +24,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S5 — evaluation** (design §12). S0–S4 done 2026-11-12.
+**S5b — sensitive data before writing** (design §12). S0–S5 done 2026-11-12; S5 eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
 
 ## Rules
 

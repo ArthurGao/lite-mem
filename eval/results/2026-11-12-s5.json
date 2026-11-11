@@ -1,0 +1,344 @@
+{
+  "at": "2026-11-11T18:33:16+00:00",
+  "git": "363b770",
+  "dataset": "eval/dataset.json",
+  "dataset_sha256": "52678ce502dbaf3a86812e5da134f397f6f9aa8f807ccbc1a0d083413b5a1d71",
+  "k": 3,
+  "settings": {
+    "resolve": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "resolve_prompt": "resolve_conflict.j2"
+      }
+    },
+    "add_only": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "add_only",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "resolve_prompt": "resolve_conflict.j2"
+      }
+    },
+    "terse_prompt": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2"
+      }
+    },
+    "thinking": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": null
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "resolve_prompt": "resolve_conflict.j2"
+      }
+    },
+    "mem0-2.2.1": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": null
+      }
+    }
+  },
+  "reports": [
+    {
+      "system": "resolve",
+      "k": 3,
+      "present": 19,
+      "remembered": 16,
+      "stale_checks": 7,
+      "stale": 4,
+      "questions": 11,
+      "hits": 8,
+      "memories": 21,
+      "add_seconds": [
+        6.858072917035315,
+        11.607178749982268,
+        12.667892750003375,
+        10.042070667026564,
+        8.747346457967069,
+        8.79883670900017,
+        18.783490083005745,
+        4.428158833005,
+        11.547367082966957,
+        8.987430416978896,
+        6.248990916996263
+      ],
+      "misses": [
+        "xiaowang s1: forgot '会计'",
+        "xiaowang s3: forgot '上海'",
+        "xiaowang s3: still remembers '北京'",
+        "xiaowang s4: still remembers '482915'",
+        "xiaowang: no hit for '她现在住在哪个城市？'",
+        "emma s3: forgot 'Wellington'",
+        "emma s3: still remembers 'Auckland'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma: no hit for 'Which city does Emma live in?'",
+        "emma: no hit for 'When does she work?'"
+      ],
+      "recall": 0.8421052631578947,
+      "stale_rate": 0.5714285714285714,
+      "hit_rate": 0.7272727272727273
+    },
+    {
+      "system": "add_only",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 6,
+      "questions": 11,
+      "hits": 10,
+      "memories": 25,
+      "add_seconds": [
+        3.081060874974355,
+        4.123120082949754,
+        2.7769083750317805,
+        2.911140832991805,
+        3.713198082987219,
+        3.052627708995715,
+        3.51116783299949,
+        1.5676849170122296,
+        4.909378333948553,
+        3.170610625005793,
+        1.7158329999656416
+      ],
+      "misses": [
+        "xiaowang s1: forgot '会计'",
+        "xiaowang s3: still remembers '北京'",
+        "xiaowang s4: still remembers '482915'",
+        "emma s3: still remembers 'Auckland'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma s4: still remembers 'night shift'",
+        "emma: no hit for 'When does she work?'",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.8571428571428571,
+      "hit_rate": 0.9090909090909091
+    },
+    {
+      "system": "terse_prompt",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 2,
+      "questions": 11,
+      "hits": 11,
+      "memories": 15,
+      "add_seconds": [
+        9.379651999974158,
+        4.730953209043946,
+        11.450875249982346,
+        8.793361582967918,
+        9.640037124976516,
+        0.5669181669945829,
+        11.401585042010993,
+        5.5838075000210665,
+        8.494223333022092,
+        8.059531416976824,
+        5.632413749990519
+      ],
+      "misses": [
+        "xiaowang s4: still remembers '482915'",
+        "emma s2: forgot 'Mo'",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.2857142857142857,
+      "hit_rate": 1.0
+    },
+    {
+      "system": "thinking",
+      "k": 3,
+      "present": 19,
+      "remembered": 19,
+      "stale_checks": 7,
+      "stale": 1,
+      "questions": 11,
+      "hits": 11,
+      "memories": 18,
+      "add_seconds": [
+        67.98062883300008,
+        22.631907207949553,
+        36.8725709579885,
+        63.81020649999846,
+        43.754314374993555,
+        70.36511541699292,
+        44.320178832975216,
+        29.232315749977715,
+        53.334403791988734,
+        36.85604154103203,
+        46.28536404197803
+      ],
+      "misses": [
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 1.0,
+      "stale_rate": 0.14285714285714285,
+      "hit_rate": 1.0
+    },
+    {
+      "system": "mem0-2.2.1",
+      "k": 3,
+      "present": 19,
+      "remembered": 19,
+      "stale_checks": 7,
+      "stale": 7,
+      "questions": 11,
+      "hits": 11,
+      "memories": 22,
+      "add_seconds": [
+        29.216866833041422,
+        55.96094466699287,
+        21.478876499983016,
+        41.56267937499797,
+        22.904703875014093,
+        33.48503325000638,
+        51.94164649996674,
+        46.46410433301935,
+        17.17170329199871,
+        19.20477570797084,
+        26.06531862501288
+      ],
+      "misses": [
+        "xiaowang s3: still remembers '北京'",
+        "xiaowang s3: still remembers '会计'",
+        "xiaowang s4: still remembers '482915'",
+        "emma s3: still remembers 'Auckland'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma s4: still remembers 'night shift'",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 1.0,
+      "stale_rate": 1.0,
+      "hit_rate": 1.0
+    }
+  ]
+}
