@@ -45,25 +45,25 @@ def test_schema_must_be_an_identifier() -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "secret"),
+    ("text", "secret", "kept"),
     [
-        ("postgresql://u:secret@h/db", "secret"),
-        ("host=h password=secret dbname=x", "secret"),
-        ("host=h password='a b c' dbname=x", "a b c"),
-        ("postgresql://h/db?password=secret", "secret"),
-        ("host=h sslpassword=secret dbname=x", "secret"),
-        ("postgresql://h/db?sslpassword=secret", "secret"),
-        ("failed: host=h password=ab&cd dbname=x", "cd"),
-        ("env PGPASSWORD=secret psql", "secret"),
-        ("db_password=secret in config", "secret"),
-        ("postgresql://h/db?db_password=secret&x=1", "secret"),
-        ("failed: postgresql://h/db?password=ab&sslmode=require", "ab"),
-        ("connection to postgresql://u:secret@h/db failed: timeout", "secret"),
+        ("postgresql://u:secret@h/db", "secret", "@h/db"),
+        ("host=h password=secret dbname=x", "secret", "dbname=x"),
+        ("host=h password='a b c' dbname=x", "a b c", "dbname=x"),
+        ("postgresql://h/db?password=secret", "secret", "h/db"),
+        ("host=h sslpassword=secret dbname=x", "secret", "dbname=x"),
+        ("postgresql://h/db?sslpassword=secret", "secret", "h/db"),
+        ("failed: host=h password=ab&cd dbname=x", "cd", "dbname=x"),
+        ("failed: postgresql://h/db?password=ab&sslmode=require", "ab", "sslmode=require"),
+        ("env PGPASSWORD=secret psql", "secret", "psql"),
+        ("db_password=secret in config", "secret", "in config"),
+        ("postgresql://h/db?db_password=secret&x=1", "secret", "x=1"),
+        ("connection to postgresql://u:secret@h/db failed: timeout", "secret", "timeout"),
     ],
 )
-def test_redact_hides_passwords(text: str, secret: str) -> None:
+def test_redact_hides_passwords(text: str, secret: str, kept: str) -> None:
     assert secret not in redact(text)
-    assert "h" in redact(text)  # the rest stays readable
+    assert kept in redact(text)  # the rest stays readable
 
 
 @pytest.mark.parametrize("reserved", ["public", "information_schema", "pg_catalog", "pg_temp"])
