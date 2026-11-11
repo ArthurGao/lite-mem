@@ -13,7 +13,7 @@ right memories again with hybrid vector + BM25 search weighted by importance and
 - A memory engine for [llm-steward](https://github.com/ArthurGao/llm-steward); sister of
   [lite-rag](https://github.com/ArthurGao/lite-rag).
 
-Status: in development (stages S0–S6 done). The design is in [docs/lite-mem-design.md](docs/lite-mem-design.md);
+Status: in development (stages S0–S8b done; next S9, the llm-steward provider). The design is in [docs/lite-mem-design.md](docs/lite-mem-design.md);
 stages, acceptance and what each stage's review found are in its §12.
 
 ## Quick start
@@ -28,6 +28,7 @@ uv run litemem migrate
 uv run litemem add --user emma "I live in Wellington and work as a nurse"
 uv run litemem search --user emma "where does Emma live"
 uv run litemem eval -v resolve -v add_only --mem0   # the synthetic comparison (about an hour on a laptop)
+uv run litemem maintain --user emma                  # offline: merge, expire, forget (design §6)
 ```
 
 Secrets (passwords, PINs, card and ID numbers, API keys) are never stored as memories: they are dropped by
@@ -54,8 +55,10 @@ curl -H "Authorization: Bearer lm_app_…" -H 'Content-Type: application/json' \
 ```
 
 Routes: `POST /v1/memories:add` (header `Idempotency-Key` makes a retry replay the first result),
-`POST /v1/memories:search`, `GET /v1/memories?user_id=…`, `GET|PATCH|DELETE /v1/memories/{id}`,
-`GET /v1/memories/{id}/history`, `DELETE /v1/users/{user_id}` (erase everything about a user), `GET /health`.
+`POST /v1/memories` (store one fact as given, no extraction), `POST /v1/memories:search`,
+`GET /v1/memories?user_id=…` (paged), `GET|PATCH|DELETE /v1/memories/{id}`, `GET /v1/memories/{id}/history`,
+`POST /v1/maintain` (consolidation and forgetting, design §6), `DELETE /v1/users/{user_id}` (erase everything
+about a user), `GET /health` (`?deep=true` also embeds).
 A key reaches the namespaces its globs match (`X-LiteMem-Namespace`, default `LITEMEM_NAMESPACE`); without
 any key the service serves loopback clients only. Errors are Problem Details (`application/problem+json`).
 
