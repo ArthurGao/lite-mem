@@ -3,6 +3,7 @@
 import json
 from typing import Any
 
+import psycopg
 import pytest
 from typer.testing import CliRunner
 
@@ -99,7 +100,7 @@ def test_eval_sets_up_mem0_before_the_long_lite_mem_runs(
     opened: list[str] = []
 
     def no_mem0(*_: Any, **__: Any) -> None:
-        raise ImportError("The 'ollama' library is required.")
+        raise RuntimeError(f"cannot connect to {pg_url}")  # third-party errors may echo the URL
 
     def track(settings: Any, *_: Any, **__: Any) -> MemoryEngine:
         opened.append(settings.namespace)
@@ -112,4 +113,47 @@ def test_eval_sets_up_mem0_before_the_long_lite_mem_runs(
     result = CliRunner().invoke(
         app, ["eval", "-v", "resolve", "--mem0", "--dataset", str(dataset), "--schema", TEST_SCHEMA]
     )
-    assert isinstance(result.exception, ImportError) and opened == []
+    assert result.exit_code == 1 and opened == []
+    assert "error:" in result.output
+    password = psycopg.conninfo.conninfo_to_dict(pg_url).get("password")
+    assert password and password not in result.output
+    assert app.pretty_exceptions_show_locals is False  # a crash never prints locals (the URL)
+
+
+def test_a_failing_mem0_run_keeps_the_lite_mem_results_and_hides_the_url(
+    pg: Any, pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path
+
+    from lite_mem import eval_mem0
+
+    class BrokenMem0:
+        name = "mem0-2.2.1"
+
+        def __init__(self, *_: Any) -> None: ...
+
+        def reset(self, user_ids: list[str]) -> None: ...
+
+        def add(self, user_id: str, messages: Any) -> None:
+            raise RuntimeError(f"lost connection to {pg_url}")
+
+        def close(self) -> None: ...
+
+    def fake_engine(settings: Any, *_: Any, **__: Any) -> MemoryEngine:
+        return MemoryEngine(
+            PgStore(pg_url, settings.db_schema), settings.namespace, FakeEmbedder(),
+            extractor=RuleExtractor(), resolver=AddOnlyResolver(),
+        )  # fmt: skip
+
+    monkeypatch.setattr(eval_mem0, "Mem0System", BrokenMem0)
+    monkeypatch.setattr(factory, "open_engine", fake_engine)
+    monkeypatch.setenv("LITEMEM_DATABASE_URL", pg_url)
+    dataset = Path(__file__).parents[2] / "eval" / "dataset.json"
+    result = CliRunner().invoke(
+        app,
+        ["eval", "-v", "add_only", "--mem0", "--dataset", str(dataset), "--schema", TEST_SCHEMA],
+    )
+    assert result.exit_code == 0, result.output
+    assert "| add_only |" in result.output and "mem0 run failed: RuntimeError" in result.output
+    password = psycopg.conninfo.conninfo_to_dict(pg_url).get("password")
+    assert password and password not in result.output

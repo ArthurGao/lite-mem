@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel
 
@@ -182,6 +183,26 @@ def table(reports: list[Report]) -> str:
             f"| {r.seconds_per_add:.1f} |"
         )
     return "\n".join(lines)
+
+
+def describe(settings: Settings, sections: set[str]) -> dict[str, Any]:
+    """The settings a run used, safe to save: keys masked (pydantic), endpoints cut to scheme,
+    host and path (no user info or query string, where a token can hide)."""
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: _endpoint(v) if k == "base_url" else clean(v) for k, v in value.items()}
+        return value
+
+    return clean(settings.model_dump(mode="json", include=sections))  # type: ignore[no-any-return]
+
+
+def _endpoint(url: str | None) -> str | None:
+    if not url:
+        return url
+    parts = urlsplit(url)
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{parts.hostname}{port}{parts.path}"
 
 
 def save(path: Path, reports: list[Report], *, dataset: Path, settings: dict[str, Any]) -> None:

@@ -15,7 +15,8 @@ from lite_mem.engine import MemoryEngine
 from lite_mem.errors import LiteMemError, redact
 from lite_mem.types import Message, Scope
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+# A crash never prints locals: they can hold the database URL or a key.
+app = typer.Typer(no_args_is_help=True, add_completion=False, pretty_exceptions_show_locals=False)
 
 # What an eval run records about each system's settings (never the database URL).
 _MODEL_FACING = {"llm", "embedding", "pipeline", "search"}
@@ -151,16 +152,24 @@ def eval_command(
     if mem0:  # set up first: a missing dependency fails before the long lite-mem runs
         from lite_mem.eval_mem0 import Mem0System
 
-        mem0_system = Mem0System(base)
+        try:
+            mem0_system = Mem0System(base)
+        except Exception as exc:  # third-party: its message may carry the URL; _fail redacts
+            _fail(f"mem0 setup failed: {type(exc).__name__}: {exc}")
     try:
         for name in names:
             settings = ev.variant_settings(base, name, schema)
-            used[name] = settings.model_dump(mode="json", include=_MODEL_FACING)
+            used[name] = ev.describe(settings, _MODEL_FACING)
             with _engine(settings) as engine:
                 reports.append(ev.run(ev.LiteMemSystem(name, engine), data, k=k))
         if mem0_system:
-            used[mem0_system.name] = base.model_dump(mode="json", include={"llm", "embedding"})
-            reports.append(ev.run(mem0_system, data, k=k))
+            used[mem0_system.name] = ev.describe(base, {"llm", "embedding"})
+            try:
+                reports.append(ev.run(mem0_system, data, k=k))
+            except Exception as exc:  # as above; the lite-mem results are still printed
+                typer.echo(
+                    f"error: mem0 run failed: {redact(f'{type(exc).__name__}: {exc}')}", err=True
+                )
     finally:
         if mem0_system:
             mem0_system.close()

@@ -62,6 +62,28 @@ def test_the_run_scores_a_system_and_the_table_shows_it() -> None:
     assert "| canned | 19/19 (100%) |" in ev.table([report]) and "hit@3" in ev.table([report])
 
 
+def test_described_settings_keep_no_credentials() -> None:
+    settings = Settings.model_validate(
+        {
+            "database_url": "postgresql://u:dbpw@db.test/x",
+            "llm": {
+                "base_url": "http://u:urlpw@llm.test:8080/v1?api_key=qkey",
+                "api_key": "llmkey",
+                "roles": {"resolve": {"base_url": "https://r.test/v1?token=rtok"}},
+            },
+            "embedding": {"base_url": "http://e.test/api", "api_key": "embkey"},
+        }
+    )
+    described = ev.describe(settings, {"llm", "embedding", "pipeline"})
+    text = json.dumps(described)
+    for secret in ("dbpw", "urlpw", "qkey", "llmkey", "rtok", "embkey", "database_url"):
+        assert secret not in text
+    assert described["llm"]["base_url"] == "http://llm.test:8080/v1"
+    assert described["llm"]["roles"]["resolve"]["base_url"] == "https://r.test/v1"
+    assert described["embedding"]["base_url"] == "http://e.test/api"
+    assert described["llm"]["model"] == settings.llm.model
+
+
 def test_a_saved_run_records_what_produced_it(tmp_path: Path) -> None:
     data_path = ROOT / "eval" / "dataset.json"
     report = ev.run(_Canned(), ev.load(data_path), k=3)
