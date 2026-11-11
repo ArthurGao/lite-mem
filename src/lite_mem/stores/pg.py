@@ -362,28 +362,25 @@ class PgTx:
         if not wanted:
             return []
         where, params = _where(filters)
-        # N, avgdl and n(t) are the namespace's current memories' (keyword.py has the formula).
+        # N, avgdl and n(t) are the rows the filters let through (keyword.py has the formula):
+        # the work grows with the scope, not the namespace, as in vector_search.
         rows = self._conn.execute(
             f"""
-            WITH cur AS (SELECT id, terms FROM memories
-                         WHERE namespace = %(ns)s AND valid_to IS NULL),
-                 stats AS (SELECT count(*) AS n, coalesce(avg(terms), 0) AS avgdl FROM cur),
-                 df AS (SELECT p.term, count(*) AS df FROM memory_postings p
-                        JOIN cur ON cur.id = p.memory_id
-                        WHERE p.namespace = %(ns)s AND p.term = ANY(%(terms)s) GROUP BY p.term)
+            WITH visible AS MATERIALIZED (SELECT m.id, m.terms FROM memories m WHERE {where}),
+                 stats AS (SELECT count(*) AS n, coalesce(avg(terms), 0) AS avgdl FROM visible),
+                 hits AS (SELECT v.id, v.terms, p.term, p.tf FROM visible v
+                          JOIN memory_postings p
+                            ON p.memory_id = v.id AND p.term = ANY(%(terms)s)),
+                 df AS (SELECT term, count(*) AS df FROM hits GROUP BY term)
             SELECT id FROM (
-                SELECT m.id, sum(
+                SELECT h.id, sum(
                            ln(1 + (stats.n - df.df + 0.5) / (df.df + 0.5))
-                           * p.tf * (%(k1)s + 1)
-                           / (p.tf + %(k1)s * (1 - %(b)s + %(b)s * m.terms
+                           * h.tf * (%(k1)s + 1)
+                           / (h.tf + %(k1)s * (1 - %(b)s + %(b)s * h.terms
                                                / nullif(stats.avgdl, 0)))
                        ) AS score
-                FROM memory_postings p
-                JOIN memories m ON m.id = p.memory_id
-                JOIN df ON df.term = p.term
-                CROSS JOIN stats
-                WHERE p.namespace = %(ns)s AND p.term = ANY(%(terms)s) AND {where}
-                GROUP BY m.id
+                FROM hits h JOIN df ON df.term = h.term CROSS JOIN stats
+                GROUP BY h.id
             ) scored
             ORDER BY round(score::numeric, 9) DESC, id
             LIMIT %(limit)s

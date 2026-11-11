@@ -84,3 +84,52 @@ def test_writes_and_lists_are_bounded_the_same_everywhere(engine: MemoryEngine) 
     assert [m.content for m in page] == ["fact 1", "fact 2"]
     with pytest.raises(InvalidRequest, match="limit"):
         engine.list_memories(ADA, limit=MAX_LIST + 1)
+
+
+def test_every_text_a_caller_states_is_screened(store: Store) -> None:
+    """Security review of S8: metadata keys, a profile key and the source were stored as given."""
+    from lite_mem.testing import FakeEmbedder
+
+    for policy in ("drop", "mask"):
+        engine = MemoryEngine(store, "app", FakeEmbedder(), sensitive=policy)  # type: ignore[arg-type]
+        for fact in (
+            Fact("wifi set up", metadata={"password is tiger-77": "yes"}),  # a key is a name:
+            Fact("Wellington", type="profile", key="pin 4829-1038"),  # never masked, refused
+        ):
+            with pytest.raises(InvalidRequest, match="secret"):
+                engine.remember(fact, ADA)
+    drop = MemoryEngine(store, "app", FakeEmbedder())
+    with pytest.raises(InvalidRequest, match="secret"):
+        drop.remember(Fact("wifi set up", source="password is tiger-77"), ADA)
+    masked = MemoryEngine(store, "app", FakeEmbedder(), sensitive="mask")
+    [event] = masked.remember(Fact("wifi set up", source="password is tiger-77"), ADA)
+    assert masked.get(event.memory_id).source == "password is [redacted]"
+
+
+def test_a_derived_facts_every_field_is_screened(store: Store) -> None:
+    """Codex S8b: a custom Extractor may set a fact's source or key; only content was screened."""
+    from lite_mem.extract import Extraction
+    from lite_mem.resolve import AddOnlyResolver
+    from lite_mem.testing import FakeEmbedder
+    from lite_mem.types import Message
+
+    class Leaky:
+        def extract(self, messages: list[Message]) -> Extraction:
+            return Extraction(
+                [
+                    Fact("wifi set up", source="password is tiger-77"),
+                    Fact("Wellington", type="profile", key="pin 4829-1038"),
+                    Fact("likes tea"),
+                ],
+                None,
+            )
+
+    for policy, kept in (("drop", ["likes tea"]), ("mask", ["likes tea", "wifi set up"])):
+        engine = MemoryEngine(
+            store, f"leaky-{policy}", FakeEmbedder(), extractor=Leaky(),
+            resolver=AddOnlyResolver(), sensitive=policy,  # type: ignore[arg-type]
+        )  # fmt: skip
+        engine.add([Message("user", "hi")], ADA)
+        stored = {m.content: m.source for m in engine.list_memories(ADA)}
+        assert sorted(stored) == sorted(kept)
+        assert "tiger-77" not in repr(stored)

@@ -431,40 +431,29 @@ class SqliteTx:
         wanted = sorted(set(terms(query)))
         if not wanted:
             return []
-        # N, avgdl and n(t) are the namespace's current memories', as in PgStore.
+        # N, avgdl and n(t) are the rows the filters let through, as in PgStore.
+        where, params = _where(filters)
+        params = {**params, "ns": namespace}
         stats = self._one(
-            "SELECT count(*) AS n, coalesce(avg(terms), 0) AS avgdl FROM memories "
-            "WHERE namespace = ? AND valid_to IS NULL",
-            (namespace,),
+            "SELECT count(*) AS n, coalesce(avg(m.terms), 0) AS avgdl FROM memories m "
+            f"WHERE {where}",
+            params,
         )
         assert stats is not None
-        marks = ", ".join("?" * len(wanted))
-        df = {
-            r["term"]: r["df"]
-            for r in self._rows(
-                "SELECT p.term, count(*) AS df FROM memory_postings p "
-                "JOIN memories m ON m.id = p.memory_id "
-                f"WHERE p.namespace = ? AND m.valid_to IS NULL AND p.term IN ({marks}) "
-                "GROUP BY p.term",
-                (namespace, *wanted),
-            )
-        }
-        where, params = _where(filters)
         names = {f"t{i}": t for i, t in enumerate(wanted)}
         rows = self._rows(
-            "SELECT m.id, m.terms, p.term, p.tf FROM memory_postings p "
-            "JOIN memories m ON m.id = p.memory_id "
-            f"WHERE p.namespace = :ns AND p.term IN ({', '.join(':' + n for n in names)}) "
-            f"AND {where}",
-            {**params, **names, "ns": namespace},
+            "SELECT m.id, m.terms, p.term, p.tf FROM memories m "
+            "JOIN memory_postings p ON p.memory_id = m.id "
+            f"AND p.term IN ({', '.join(':' + n for n in names)}) WHERE {where}",
+            {**params, **names},
         )
+        df: dict[str, int] = {}
+        for r in rows:
+            df[r["term"]] = df.get(r["term"], 0) + 1
         scores: dict[str, float] = {}
         for r in rows:
-            if r["term"] in df:
-                score = idf(stats["n"], df[r["term"]]) * term_score(
-                    r["tf"], r["terms"], stats["avgdl"]
-                )
-                scores[r["id"]] = scores.get(r["id"], 0.0) + score
+            score = idf(stats["n"], df[r["term"]]) * term_score(r["tf"], r["terms"], stats["avgdl"])
+            scores[r["id"]] = scores.get(r["id"], 0.0) + score
         ranked = sorted(scores.items(), key=lambda item: (-round(item[1], 9), item[0]))
         return [uuid.UUID(i) for i, _ in ranked[:limit]]
 

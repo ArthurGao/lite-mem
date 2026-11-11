@@ -41,11 +41,11 @@ class RememberIn(_Body):
     content: str = Field(max_length=MAX_MESSAGE_CHARS)
     scope: ScopeIn
     type: MemoryType = "semantic"
-    key: str | None = None
+    key: str | None = Field(default=None, max_length=200)
     importance: float = 0.5
     confidence: float = 0.8
     expires_at: datetime | None = None
-    source: str | None = None
+    source: str | None = Field(default=None, max_length=1000)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def to_fact(self) -> Fact:

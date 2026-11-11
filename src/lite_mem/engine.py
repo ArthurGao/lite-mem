@@ -152,10 +152,7 @@ class MemoryEngine:
         maintenance: MaintainConfig | None = None,
         clock: Clock = _utcnow,
     ) -> None:
-        try:
-            self._ns = TypeAdapter(Namespace).validate_python(namespace)
-        except ValidationError as exc:
-            raise InvalidRequest(f"invalid namespace {namespace!r}") from exc
+        self._ns = valid_namespace(namespace)
         self._store = store
         self._embedder = embedder
         self._extractor = extractor
@@ -217,12 +214,7 @@ class MemoryEngine:
         self, fact: Fact, scope: Scope, *, idempotency_key: str | None = None
     ) -> list[MemoryEvent]:
         """Store one fact as given (a profile fact supersedes the key's current value)."""
-        fact = dataclasses.replace(
-            fact,
-            content=self._stated(fact.content),
-            metadata=self._stated_metadata(fact.metadata),
-        )
-        return self._write(scope, [Add(fact)], idempotency_key)
+        return self._write(scope, [Add(self._stated_fact(fact))], idempotency_key)
 
     def update(
         self,
@@ -624,20 +616,29 @@ class MemoryEngine:
         return [_checked(f, scope) for f in self._derived(facts)]
 
     def _derived(self, facts: Sequence[Fact]) -> list[Fact]:
-        """Facts the engine derived itself: a secret is dropped or masked, never stored."""
+        """Facts the engine derived itself (an extractor's, a merge's, a remainder): the same
+        screening as a caller's fact, every field; one that would be refused is dropped."""
         kept: list[Fact] = []
         dropped: list[str] = []
         for fact in facts:
-            found = self._secrets(fact.content)
-            if not found:
-                kept.append(fact)
-            elif self._sensitive == "mask":
-                kept.append(dataclasses.replace(fact, content=mask(fact.content)))
-            else:
-                dropped += [f.kind for f in found]
-        if dropped:  # kinds only: the log must not hold the secret either
-            log.warning("not stored: %d sensitive value(s) %s", len(dropped), sorted(set(dropped)))
+            try:
+                kept.append(self._stated_fact(fact))
+            except InvalidRequest as exc:  # its message names kinds, never the secret
+                dropped.append(str(exc))
+        if dropped:
+            log.warning("not stored: %d derived fact(s): %s", len(dropped), sorted(set(dropped)))
         return kept
+
+    def _stated_fact(self, fact: Fact) -> Fact:
+        """A fact with every text field screened: content and source masked or refused, a name
+        (profile key, metadata key) refused (see `_named`)."""
+        return dataclasses.replace(
+            fact,
+            content=self._stated(fact.content),
+            key=None if fact.key is None else self._named(fact.key, "a profile key"),
+            source=None if fact.source is None else self._stated(fact.source),
+            metadata=self._stated_metadata(fact.metadata),
+        )
 
     def _secrets(self, text: str) -> list[Finding]:
         return [] if self._sensitive == "keep" else find(text)
@@ -653,12 +654,21 @@ class MemoryEngine:
                     raise InvalidRequest(f"not stored: metadata holds a secret ({kinds})")
                 return mask(value) if found else value
             if isinstance(value, dict):
-                return {k: screen(v) for k, v in value.items()}
+                return {self._named(str(k), "a metadata key"): screen(v) for k, v in value.items()}
             if isinstance(value, list):
                 return [screen(v) for v in value]
             return value
 
-        return {k: screen(v) for k, v in metadata.items()}
+        return screen(metadata)  # type: ignore[no-any-return]
+
+    def _named(self, name: str, what: str) -> str:
+        """A name (a profile key, a metadata key) holding a secret is refused under any policy
+        but keep: a masked name would no longer name the same thing."""
+        found = self._secrets(name)
+        if found:
+            kinds = ", ".join(sorted({f.kind for f in found}))
+            raise InvalidRequest(f"not stored: {what} holds a secret ({kinds})")
+        return name
 
     def _stated(self, content: str) -> str:
         """A fact a caller states explicitly: masked, or refused so the caller knows."""
@@ -846,6 +856,13 @@ def _filters(
         scope, include_shared=include_shared, as_of=as_of, types=kinds,
         metadata=metadata or None, now=now,
     )  # fmt: skip
+
+
+def valid_namespace(namespace: str) -> str:
+    try:
+        return TypeAdapter(Namespace).validate_python(namespace)
+    except ValidationError as exc:
+        raise InvalidRequest(f"invalid namespace {namespace!r}") from exc
 
 
 def _aware(at: datetime | None, name: str) -> None:

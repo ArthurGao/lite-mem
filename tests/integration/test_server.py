@@ -324,3 +324,39 @@ def test_remember_stores_a_fact_as_given(components: Components) -> None:
     assert moved.json()["events"][0]["replaced"] == event["memory_id"]  # the key's new value
     secret = client.post("/v1/memories", json={**body, "content": "PIN is 4829"}, headers=_auth())
     assert _is_problem(secret, 400) and "4829" not in secret.text
+
+
+def test_failed_namespaces_do_not_use_up_the_limit(components: Components) -> None:
+    """Security review of S8: a name that failed to open (invalid) still took a slot, so a few bad
+    requests could lock every new namespace out."""
+    settings = _settings().model_copy(
+        update={"server": ServerConfig(api_keys=[STEWARD_KEY], max_namespaces=2)}
+    )
+    client = TestClient(create_app(settings, components))
+    for bad in ("steward/BAD NAME", "steward/also bad!", "steward/no way?"):
+        assert _is_problem(_list(client, **_auth(STEWARD_TOKEN, bad)), 400)
+    for ns in ("steward/1", "steward/2"):
+        assert _list(client, **_auth(STEWARD_TOKEN, ns)).status_code == 200
+
+
+def test_remember_bounds_its_text_fields(components: Components) -> None:
+    client = _client(components)
+    body = {"content": "x", "scope": {"user_id": "ada"}, "source": "s" * 1001}
+    assert _is_problem(client.post("/v1/memories", json=body, headers=_auth()), 422)
+    body = {"content": "x", "scope": {"user_id": "ada"}, "type": "profile", "key": "k" * 201}
+    assert _is_problem(client.post("/v1/memories", json=body, headers=_auth()), 422)
+
+
+def test_an_invalid_name_leaves_no_lock_behind(components: Components) -> None:
+    """Codex S8b: removing a failed name's lock could split waiters across two locks; names are
+    now checked before any lock, so locks are never removed and invalid ones never made."""
+    from lite_mem.errors import InvalidRequest
+    from lite_mem.factory import Engines
+
+    engines = Engines(components, max_namespaces=5)
+    for bad in ("BAD NAME", "no way?", ""):
+        with pytest.raises(InvalidRequest):
+            engines(bad)
+    assert engines._locks == {}
+    engines("app")
+    assert list(engines._locks) == ["app"]

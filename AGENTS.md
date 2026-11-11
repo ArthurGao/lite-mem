@@ -24,7 +24,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S8b — BM25 statistics per scope, then S9** (design §12, §13). S0–S8 done 2026-11-12; eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
+**S9 — `LiteMemProvider` in llm-steward** (design §10, §12; first settle the S9 entry decisions in §13). S0–S8b done 2026-11-12; eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
 
 ## Rules
 

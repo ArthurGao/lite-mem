@@ -347,6 +347,9 @@ lite-mem/
   - /simplify（reuse / simplification）：`_write` 只收 Add、去掉没用的参数；`_closing` 去掉没用的参数；提示词文件名只在 `prompts` 定义一次；两个 LLM 客户端共用一个基类（客户端缓存、user 消息），Anthropic 的出处也用配置里的 provider；`RuleExtractor` 只有测试在用，挪到 `testing.py`；抽取的长度上限改名 `MAX_EXTRACTED_CHARS`，和引擎的 `MAX_FACT_CHARS` 分开；`FakeLLM.roles` 没人用，删掉；几处过时的注释；测试里重复的 `_current`、`_memory` 收进共享 helper。没做：engine.py（约 850 行）不拆——只有几个纯校验函数是干净的接缝，维护和推断都依赖引擎的私有方法，拆开会把唯一的写入口 `_apply` 散到几个文件；`Components` 的默认值和 `MemoryEngine` 的重复（只有一个测试 helper 用到默认值）；`MemoryEngine.health` 保留（S9 的进程内 provider 要用）；两个 store 里方言不同的 SQL 不抽象（由同一套测试保证一致）；测试里各文件自己的 `ADA` 常量保留（一行，读起来更直接）。
   - **留到 S8b**：BM25 按 scope 统计。现在每次检索、每条待消解的事实都要按整个 namespace 算一遍统计量和文档频率，开销随 namespace 增长，而不是随用户；S9 里一个 llm-steward namespace 就是一个 lite-mem namespace，里面有很多用户。改成先物化 scope 可见的行再算（和向量检索一样），排序会变，按规则要真实模型 eval 前后对比。
   - **留到 S9**：事件契约（时间、scope、NOOP、出处拆分）、离线变化怎么到达 llm-steward、延迟和租约——都要和 llm-steward 那边一起改，见 §13。
+- **S8b（2026-11-12）**：BM25 的统计量（N、平均长度、文档频率）改成按这次检索能返回的行算（scope 和其他过滤条件），不再按整个 namespace：一个用户的排序不受别的用户说了什么影响，开销随用户增长而不是随 namespace（S9 里一个 llm-steward namespace 有很多用户）。两个 store 都改，`keyword.py` 的说明跟着改。先有失败的测试：别的用户的 30 条"tea"按 namespace 统计会把 ADA 的排序翻过来。真实 embedding 的确定性检索检查（不经过 LLM：合成集的对话原样写入、检索每个问题）改前改后完全一样——11/11 命中，每题前五名排序相同；这份数据只有三个用户、用词几乎不重叠，所以它说明的是"没有退化"，"别人影响我的排序"由上面的测试说明。Ollama 按 KB 的规定用 `brew services run` 启动、跑完 `stop`。
+  - S8 提交后的自动安全审查：`remember` 没筛 profile key、source 和 metadata 的键名——都筛（名字里有秘密一律拒绝，打码会让名字不再指同一个东西）；namespace 上限按"试过的名字"计，打开失败的名字也占位——只计成功打开的；`RememberIn` 的 key、source 没有长度上限——200 和 1000。都先有失败的测试。
+  - Codex：P1 派生事实（抽取器、合并、remainder）只筛内容——改成和调用方的事实走同一套筛查（`_stated_fact`），会被拒绝的派生事实直接丢掉；P2 打开失败时删掉锁，可能让等锁的线程和新来的线程各拿一把锁、同时建同一个 namespace——namespace 名字在拿锁之前校验，锁从不删除。都先有失败的测试（变异检查）。不改：P2 两个 store 在分数恰好落在第 9 位小数的舍入中点时可能排序不同（PG 先把 float 转 numeric 再舍入，Python 对 float 舍入）——要同时恰好在中点又恰好并列，实际不会发生，为此统一舍入规则得不偿失。
 
 ## 13. 待确认
 
@@ -361,4 +364,4 @@ lite-mem/
   - 离线变化怎么到达 llm-steward：它自己按用户调 `maintain`（推荐），还是加按游标拉事件的接口（`memory_events` 的 id 在并发写时提交顺序不保证，游标要留安全余量）。
   - llm-steward 的 `MemoryProvider.add` 没有幂等键，`ExtractionService` 只镜像 ADD。
   - 延迟和租约：一次 `add(infer=true)` 是一次抽取加每条事实一次消解，本地 qwen3 3–10 秒（不思考）到 90 秒（思考）；llm-steward 的任务租约 60 秒。要么一次调用消解整批（S4 起推迟的另一种 Resolver，要 eval 验证），要么给 lite-mem 的任务单独的租约。
-  - BM25 按 scope 统计（见 §12 S8）。
+  - ~~BM25 按 scope 统计~~：S8b 已做。

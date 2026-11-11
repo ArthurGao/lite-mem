@@ -4,9 +4,10 @@
     IDF(t)      = ln(1 + (N - n(t) + 0.5) / (n(t) + 0.5))
 
 t runs over the distinct query terms; f(t,d) is the term's count in memory d, |d| its length in
-terms, N the number of current memories in the namespace, n(t) those containing t, avgdl their
-mean length. The statistics are the namespace's: a scope filter narrows what may be returned, not
-the statistics. PgStore computes the same formula in SQL; the tests check it against these."""
+terms, N the number of memories the search may return (its scope and filters), n(t) those
+containing t, avgdl their mean length. The statistics are the scope's, not the namespace's (S8b):
+one user's ranking does not depend on what other users said, and the work grows with the user.
+Both stores compute this formula (PgStore in SQL); the tests check them against these functions."""
 
 import logging
 import math

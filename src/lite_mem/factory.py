@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from lite_mem.config import MaintainConfig, SearchConfig, Settings
 from lite_mem.consolidate import Consolidator, LlmConsolidator
 from lite_mem.embedding import Embedder, build_embedder
-from lite_mem.engine import MemoryEngine, health
+from lite_mem.engine import MemoryEngine, health, valid_namespace
 from lite_mem.errors import ConfigError, Refused
 from lite_mem.extract import Extractor, LlmExtractor
 from lite_mem.llm import RoutedLLM
@@ -82,14 +82,11 @@ class Engines:
         found = self._built.get(namespace)
         if found is not None:
             return found
-        with self._guard:
-            if (
-                self._max is not None
-                and len(self._locks) >= self._max
-                and namespace not in self._locks
-            ):
+        valid_namespace(namespace)  # before any lock: an invalid name leaves no trace
+        with self._guard:  # only engines that opened count: a failed open takes no slot
+            if self._max is not None and len(self._built) >= self._max:
                 raise Refused(f"this service opens at most {self._max} namespaces")
-            lock = self._locks[namespace]
+            lock = self._locks[namespace]  # never removed: a waiter always shares it
         with lock:
             if namespace not in self._built:
                 self._built[namespace] = self.components.engine(namespace)

@@ -25,6 +25,39 @@ def _found(engine: MemoryEngine, query: str, scope: Scope = ADA, **kw: Any) -> l
     return [h.memory.content for h in engine.search(query, scope, **kw)]
 
 
+def _formula_order(docs: list[str], query: str) -> list[str]:
+    """`docs` ranked by keyword.py's BM25 with statistics over exactly these docs."""
+    q = sorted(set(terms(query)))
+    counts = [term_counts(d) for d in docs]
+    n, avgdl = len(docs), sum(sum(c.values()) for c in counts) / len(docs)
+    df = {t: sum(1 for c in counts if t in c) for t in q}
+    scored = [
+        (-sum(idf(n, df[t]) * term_score(c[t], sum(c.values()), avgdl) for t in q if t in c), d)
+        for d, c in zip(docs, counts, strict=True)
+        if any(t in c for t in q)
+    ]
+    return [d for _, d in sorted(scored)]
+
+
+def test_bm25_statistics_are_the_scopes_not_the_namespaces(
+    engine: MemoryEngine, store: Store
+) -> None:
+    """S8b: one user's ranking must not depend on what other users said (and its cost must grow
+    with the user, not the namespace). Bob's many teas would make "tea" common namespace-wide."""
+    mine = ["tea tea tea", "morning walk"]
+    for d in mine:
+        engine.remember(Fact(d), ADA)
+    for n in range(30):
+        engine.remember(Fact(f"tea number {n}"), BOB)
+    query = "morning tea"
+    namespace_order = _formula_order(mine + [f"tea number {n}" for n in range(30)], query)
+    assert [d for d in namespace_order if d in mine] != _formula_order(mine, query)  # it matters
+    with store.transaction() as tx:
+        ids = tx.text_search("app", query, Filters(ADA), 10)
+        got = {m.id: m.content for m in tx.get_memories("app", ids)}
+    assert [got[i] for i in ids] == _formula_order(mine, query)
+
+
 def test_sql_bm25_ranks_exactly_as_the_formula(engine: MemoryEngine, store: Store) -> None:
     docs = [
         # written first, so it has the smaller id: without length normalisation it would tie
