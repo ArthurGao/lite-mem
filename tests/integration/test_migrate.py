@@ -1,3 +1,5 @@
+from typing import Any
+
 import psycopg
 import pytest
 from typer.testing import CliRunner
@@ -61,3 +63,30 @@ def test_an_error_quoting_a_connection_string_is_printed_without_its_password(
     result = CliRunner().invoke(app, ["migrate"])
     assert result.exit_code == 1 and "cannot connect to postgresql://" in result.output
     assert "hunter2" not in result.output
+
+
+def test_pgvector_is_installed_in_public_whatever_the_role_is_called(
+    pg: psycopg.Connection,
+) -> None:
+    """Found running lite-mem in-process under llm-steward (2026-11-12): `CREATE EXTENSION vector`
+    without a schema lands in the first existing schema of the search path, `"$user"` — in
+    llm-steward's bundled database the role and its governance schema are both `steward` — where
+    lite-mem's `search_path = <schema>, public` cannot see the `vector` type. The test database
+    already has the extension, so this checks the statement migrate sends."""
+    sent: list[str] = []
+
+    class Recording:
+        def __init__(self, conn: psycopg.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, query: Any, *args: Any, **kwargs: Any) -> Any:
+            text = query.as_string(self._conn) if hasattr(query, "as_string") else query
+            sent.append(text.decode() if isinstance(text, bytes) else text)
+            return self._conn.execute(query, *args, **kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._conn, name)
+
+    migrate(Recording(pg), TEST_SCHEMA)  # type: ignore[arg-type]
+    [extension] = [s for s in sent if "EXTENSION" in s]
+    assert extension == "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public"

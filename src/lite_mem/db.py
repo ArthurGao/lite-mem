@@ -49,7 +49,9 @@ def migrate(conn: psycopg.Connection, schema: str) -> list[str]:
     except ValueError as exc:
         raise StoreError(str(exc)) from exc
     with conn.transaction():
-        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        # in public, never the search path's first schema: that is "$user" when a schema is named
+        # like the role (llm-steward's bundled database), out of reach of `<schema>, public`
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA public")
         conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema)))
         conn.execute(
             sql.SQL(
