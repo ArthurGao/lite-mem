@@ -380,7 +380,7 @@ lite-mem/
   - LongMemEval 结果（只测检索层，470 题，不含 30 道拒答题；详情和按类型的分数见 KB `projects/lite-mem/reference/eval-results.md`）：
     - S：k10 的 recall@5 / recall@10 是 0.939 / 0.950；`follow_up=1` 是 0.946 / 0.954，多 session 题的 recall@5 从 0.910 升到 0.936；k50 的 recall@10 是 0.971（前 10 条记忆常常不到 10 个 session）。最弱的是 single-session-assistant（0.929）：答案在助手的回复里，助手发言不存成记忆。墙钟 39 分钟，峰值内存 0.95 GB。
     - oracle：recall@10 0.993–0.998，只用来核对整条流程。
-    - M：待跑（约为 S 的 10 倍）。
+    - M（每题约 500 个 session，共 114 万条用户发言）：recall@10 前 10 条记忆 0.873、前 50 条 0.891（S 是 0.950 / 0.971）。掉得最多的是 single-session-preference（0.967 → 0.767）和 multi-session（0.971 → 0.841）：只说过一次的偏好，在多 10 倍的闲聊里最难找；直接问的事实（single-session-user）不受影响。二轮检索在 M 上没有显著效果（S 上 recall@5 显著 +0.007）；前 50 条比前 10 条 recall@10 显著高 0.018。墙钟 2 小时 34 分、峰值内存 2.3 GB：各题共用的历史多，嵌入缓存省了大半。文件按题型排序，前 50 题全是 single-session-assistant，`--limit` 取的样本不代表整体。
     - 不能直接和公开的 LongMemEval 检索分数比：那些按 session 或整轮（用户加助手）建索引，检索器也不同；这里只索引用户发言，也就是 lite-mem 不经过模型时存对话的方式。
 
 ## 13. 待确认
