@@ -197,6 +197,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
   - mem0 2.2.1（同一份数据，同一个本地模型）。
 - `litemem eval` 输出对比表。真实模型只用本地 Ollama（`-m ollama`，可选开启），付费 API 只在 owner 提供 key 并同意后才跑。结果记进 KB。
 - 以后可以加 LoCoMo 这类公开基准（需要真实模型，先问 owner）。
+- **S11 起两跳评测和 LongMemEval 跑在 lite-eval 上**（Target 在 `src/lite_mem/eval_target.py`）：`uv run lite-eval run eval/lite-eval/suites/multihop.yaml`；`uv run python eval/longmemeval.py s|m|oracle`。LongMemEval 只测检索层（每题的用户发言写成记忆、按 session 算 recall@k / hit@k）；答案正确率要模型评审，等 lite-eval E5。官方数据每次下载到临时目录、跑完删除，不留在本机，也不进仓库（owner 2026-11-14 定）。`litemem eval`（S5 的合成对话集、mem0 对照）暂不迁移。
 
 ## 9. 配置
 
@@ -256,9 +257,11 @@ lite-mem/
     migrations/                              # litemem migrate（PG）
     server/ app.py auth.py schemas.py        # FastAPI（extra [server]）
     eval.py eval_mem0.py                     # litemem eval（mem0 对照：extra [eval]）
+    eval_target.py                           # lite-eval 的 Target：两跳评测、LongMemEval（S11，extra [eval]）
     cli.py testing.py prompts/*.j2           # testing：给测试和下游项目用的 fake
   tests/  unit/（fakes）  integration/（PG：独立的测试 schema lite_mem_test）  -m ollama 可选
-  eval/   合成对话、标注、报告；mem0 对照脚本
+  eval/   合成对话、标注、报告；mem0 对照脚本；lite-eval/（两跳数据集和 suite，runs/ 不提交）；
+          longmemeval.py（每次下载到临时目录，跑完删除）
   docs/lite-mem-design.md
 ```
 
@@ -288,6 +291,7 @@ lite-mem/
 | S8 收尾 | 整个引擎的 `/simplify` 和 Codex 审查，修复，重跑全部检查 | 审查结论记录在案 |
 | S9 接入 llm-steward | `LiteMemProvider`（库和 HTTP 两种）；llm-steward 的事件映射（UPDATE、DELETE）；合约测试；更新 llm-steward 设计文档 | llm-steward 的记忆合约测试在两种接入方式下都通过；手动端到端：对话 → 记忆 → 更新 → 检索 |
 | S10 记忆图谱（以后） | 实体和关系的抽取与查询 | 先测多跳的缺口（2026-11-12 已测，见下面的 S10 记录）；图谱暂不做，先做查询时的二轮检索 |
+| S11 评测迁到 lite-eval | 两跳评测改成 lite-eval 的数据集、suite 和 Target；LongMemEval S / M / oracle 的检索召回 | 原脚本冻结后同进程对照：8 组配置每题命中完全相同（FakeEmbedder 进 CI，bge-m3 在 `-m ollama` 下，并与 2026-11-12 的记录数字相同）；三个变体的结果记进 KB |
 
 ### 阶段记录
 
@@ -361,6 +365,23 @@ lite-mem/
   - **S10 实现（同日，owner 定"按你觉得好的方式做"）**：`search(..., follow_up=N)`，库、HTTP（`follow_up`）、CLI（`--follow-up`）都有，默认关闭（§5）。先比了第二轮用什么去搜（临时脚本，k=5）：整句 19/20；只用**命中里问题没有的词**（"Lily is my older sister" 减去 "where does my sister work" 剩 "lily is older"）20/20——不用在写入时抽实体，中英文同一套分词。实现后用 `eval/multihop.py --follow-up` 复测：k=5 关 13/20、`follow_up=1` 20/20、`=2` 20/20；k=3 时 19/20；k=10 20/20。单跳不退化：S5 合成集的确定性检索检查 hit@3、hit@5 在 `follow_up` 0 / 1 / 2 下都是 11/11。保留第一轮的"前一半"用向上取整（k 为奇数时和测量时的 k/2+1 一样；k=2 时原规则会把位置占满、二轮的命中进不来，HTTP 测试撞出来的）。小 scope 里"is"这类词在剩下的词里也算数，只有三五条记忆时 BM25 区分不出来——测试数据因此用了和引擎测试一样的一组记忆；真实规模（30 条）没有这个问题。默认值不改：二轮多一次 embedding 和一个读事务，要不要开由调用方决定；llm-steward 的 `LiteMemProvider` 暂时不开（它的检索在治理层做融合，要不要用另说）。
   - /simplify 后：触发访问计数只有一处（`_touched`）；二轮拆成 `_probes`（取词、一次批量 embedding，在事务外）和 `_followed`（合并，规则写成合约：第一轮的前一半不动，单跳的答案不会因为开了二轮而往下掉）；去掉每个元素都重建一次的 id 集合。没做：二轮的词去掉"is"这类在 scope 里很常见的词（用 IDF 判断，要改 store、要重测；20/20 已经够了）；用 RRF 融合两轮（会失去"前一半不动"的保证）；二轮少取候选（扫描本身省不掉，可能影响召回，没测量不改）；三个测试共用一组"姐姐"数据（各自要的第二跳句子不同）。代价：`follow_up=3` 大约是普通检索的 4 倍工作量，默认关闭、上限 3，可以接受。
   - Codex：High 第一轮的结果在第一个事务里取出、在第二个事务之后原样返回，中间的 embedding 调用期间被删掉或取代的记忆照样返回——第二个事务里用已有的问题向量重排第一轮，先有失败的测试（embedding 调用时删掉一条）。另加二轮也遵守 metadata 过滤的测试（变异检查：二轮去掉过滤就红）。不改：Medium "没给出词的种子可能被当成新命中返回"——`seen` 按 follow_up 的个数取，所有种子都在里面，Codex 把它当成了 probe 的个数；Medium HTTP schema 加范围——试了，schema 报 422、引擎报 400，同一个参数两种状态码，撤回，和 `top_k` 一样只在引擎检查（测试覆盖 -1、4、大于 top_k 都是 400）；Low CLI 提前校验——引擎给出同样的错误。
+
+- **S11 评测迁到 lite-eval（2026-11-14，lite-eval 的 E4b）**：两跳评测和 LongMemEval 跑在 lite-eval 上（§8）。
+  - 两跳：`eval/multihop.json` 转成 `eval/lite-eval/datasets/multihop/`（每个用户的记忆放 `corpus/<user>.json`，用例 id `<user>:q<nn>`，期望 `{hops, answer}`）；转回去和原文件完全相同，测试用原文件的摘要钉住，改一个答案就变红。suite 有 8 组 (top_k, follow_up)，即 2026-11-12 量过的全部组合。`MultihopTarget` 在 setup 里把所有用户的记忆写一次，8 组配置共用（BM25 按 scope 统计，所以先写完所有用户再问，和原脚本逐个用户写、问的结果相同）。
+  - 等价：原脚本冻结成 `tests/legacy_multihop.py`，同一进程里对照，8 组配置每题的命中列表、hop1 / hop2 / 两跳都中完全相同；用 bge-m3（`-m ollama`）时汇总数字和 2026-11-12 的记录相同。命中规则另有 4000 个随机样例和原 `_has` 对照。改坏 8 处全部变红（不看 follow_up、少返回命中、命中规则改 casefold 或合并空白等）。
+  - LongMemEval（`eval/longmemeval.py`）：每题一个新 SQLite 库，写入这题所有 session 的用户发言（`infer=False`，带 `session_id`），问题的命中映射成 session id，按不重复的 session 算 recall@k / hit@k。输出只有 session id，运行记录里没有基准原文。三组配置：k10、k10-follow1、k50。每题的库只建一次，三组配置共用；嵌入按文本缓存（S 的 12.2 万条用户发言里不同的只有 9.4 万条，bge-m3 本机约每秒 38 条）。
+  - 官方数据每次下载到临时目录、跑完删除（owner 2026-11-14 定）。SIGTERM / SIGHUP 也走清理；SIGKILL 没法清理，下次运行开始时删掉进程已经不在的运行目录。引擎的临时库也建在这个目录里。起因：一次 S 运行我误判它已结束（`ps | rg -v rg` 把 `/Users/arthurgao` 下的进程都过滤掉了），删掉了它正在用的数据，这次运行作废、记录删除。
+  - 引擎行为，留给 owner 定（不在本阶段改）：`add()` 声明单条消息最多 `MAX_MESSAGE_CHARS`（20000），但 `infer=False` 时只要有一条超过 `MAX_FACT_CHARS`（2000，先去掉首尾空白再算），整批写入都被拒。oracle 第一次运行有 2/470 题因此出错（先写了失败的测试）。适配器跳过这种发言并计数：S 里 830 条，其中 2 条在证据 session 里。可选的改法：引擎在入口按 2000 拒绝，或者把长消息拆开。
+  - /simplify（四个审查）采纳：`mkstemp` 漏关文件描述符（每题一个）改掉；每题的库只建一次（测试数写入次数，改坏变红）；嵌入缓存在锁外调用模型，预热不再生成用不上的列表；嵌入器只建一次；去掉多余的 `_owner`；长度检查和引擎一样先 strip；脚本用 lite-eval 的 `render_run` 报告（它会显示出错的用例，原来的报告不显示）；测试只解析一次用例。不采纳：
+    - 把向量缓存存到磁盘、长期保留：和"不在本机留数据"冲突，每次多花的嵌入时间可以接受；
+    - 两个工厂函数改成直接写类名：suite 里的名字稳定，收益小；
+    - 给组件加不带 store 的构造入口：要改 factory，这里关掉占位 store 就够了。
+  - Codex 采纳 3 条：setup 失败时删掉临时目录（先写失败的测试）；数据集钉在原文件的摘要上（上面）；建库时打开库失败也走清理（留下的只有表结构，重建结果相同，测不出差别，只改代码）。
+  - LongMemEval 结果（只测检索层，470 题，不含 30 道拒答题；详情和按类型的分数见 KB `projects/lite-mem/reference/eval-results.md`）：
+    - S：k10 的 recall@5 / recall@10 是 0.939 / 0.950；`follow_up=1` 是 0.946 / 0.954，多 session 题的 recall@5 从 0.910 升到 0.936；k50 的 recall@10 是 0.971（前 10 条记忆常常不到 10 个 session）。最弱的是 single-session-assistant（0.929）：答案在助手的回复里，助手发言不存成记忆。墙钟 39 分钟，峰值内存 0.95 GB。
+    - oracle：recall@10 0.993–0.998，只用来核对整条流程。
+    - M：待跑（约为 S 的 10 倍）。
+    - 不能直接和公开的 LongMemEval 检索分数比：那些按 session 或整轮（用户加助手）建索引，检索器也不同；这里只索引用户发言，也就是 lite-mem 不经过模型时存对话的方式。
 
 ## 13. 待确认
 

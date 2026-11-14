@@ -1,0 +1,10 @@
+name: multihop
+version: '2026-11-12'
+pack: memory
+synthetic: true
+license: Apache-2.0
+description: 'S10 gate (design §12): do two-hop questions need a memory graph? Each user''s memories are
+  stored as said (no model); a question needs two of them — one naming a person, place or thing, one saying
+  something about it without repeating how the user relates to it. `hops` are keywords of the two memories
+  the answer needs; distractors say similar things about other people. Fictional people only. Moved from
+  eval/multihop.json (S11).'

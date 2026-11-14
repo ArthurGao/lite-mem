@@ -1,0 +1,18 @@
+# S10 two-hop eval on lite-eval (design §8, §12 S11): was `eval/multihop.py`.
+#   uv run lite-eval run eval/lite-eval/suites/multihop.yaml
+# The configs are the (top_k, follow_up) pairs measured on 2026-11-12
+# (eval/results/2026-11-12-s10-multihop.json); bge-m3 on the local Ollama must be running.
+name: multihop
+pack: memory  # hop1, hop2, all_hops
+dataset: ../datasets/multihop
+targets:
+  - python: lite_mem.eval_target:multihop
+    configs:
+      - {name: k3, top_k: 3}
+      - {name: k3-follow1, top_k: 3, follow_up: 1}
+      - {name: k5, top_k: 5}
+      - {name: k5-follow1, top_k: 5, follow_up: 1}
+      - {name: k5-follow2, top_k: 5, follow_up: 2}
+      - {name: k10, top_k: 10}
+      - {name: k10-follow1, top_k: 10, follow_up: 1}
+      - {name: k10-follow2, top_k: 10, follow_up: 2}

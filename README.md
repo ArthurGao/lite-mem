@@ -29,6 +29,8 @@ uv run litemem add --user emma "I live in Wellington and work as a nurse"
 uv run litemem search --user emma "where does Emma live"
 uv run litemem search --user emma --follow-up 1 "where does my sister work"  # two-hop (design §5)
 uv run litemem eval -v resolve -v add_only --mem0   # the synthetic comparison (about an hour on a laptop)
+uv run lite-eval run eval/lite-eval/suites/multihop.yaml   # two-hop recall, 8 configs (on lite-eval)
+uv run python eval/longmemeval.py s                  # LongMemEval session recall (s | m | oracle)
 uv run litemem maintain --user emma                  # offline: merge, expire, forget (design §6)
 ```
 

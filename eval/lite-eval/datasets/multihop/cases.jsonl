@@ -1,0 +1,20 @@
+{"id": "ava:q01", "input": {"question": "Where does my sister work?", "user": "ava"}, "expected": {"hops": [["older sister"], ["pharmacist"]], "answer": ["pharmacist", "night clinic"]}, "tags": {"user": "ava"}}
+{"id": "ava:q02", "input": {"question": "Where did my manager grow up?", "user": "ava"}, "expected": {"hops": [["my manager"], ["Dunedin"]], "answer": ["Dunedin"]}, "tags": {"user": "ava"}}
+{"id": "ava:q03", "input": {"question": "What instrument does my best friend play?", "user": "ava"}, "expected": {"hops": [["best friend"], ["cello"]], "answer": ["cello"]}, "tags": {"user": "ava"}}
+{"id": "ava:q04", "input": {"question": "What breed is my sister's puppy?", "user": "ava"}, "expected": {"hops": [["Lily's puppy"], ["beagle"]], "answer": ["beagle"]}, "tags": {"user": "ava"}}
+{"id": "ava:q05", "input": {"question": "Which street is my dentist on?", "user": "ava"}, "expected": {"hops": [["My dentist"], ["Cuba Street"]], "answer": ["Cuba Street"]}, "tags": {"user": "ava"}}
+{"id": "ava:q06", "input": {"question": "When does my car need its warrant?", "user": "ava"}, "expected": {"hops": [["blue Corolla"], ["warrant"]], "answer": ["March"]}, "tags": {"user": "ava"}}
+{"id": "ava:q07", "input": {"question": "What food does my cousin's restaurant serve?", "user": "ava"}, "expected": {"hops": [["My cousin Ben"], ["Sichuan"]], "answer": ["Sichuan"]}, "tags": {"user": "ava"}}
+{"id": "ava:q08", "input": {"question": "What is above the bike shop that I go to on Tuesdays?", "user": "ava"}, "expected": {"hops": [["yoga on Tuesdays"], ["above the bike shop"]], "answer": ["yoga studio"]}, "tags": {"user": "ava"}}
+{"id": "ava:q09", "input": {"question": "Where does my flatmate's pet sleep?", "user": "ava"}, "expected": {"hops": [["cat called Pepper"], ["heater"]], "answer": ["heater"]}, "tags": {"user": "ava"}}
+{"id": "ava:q10", "input": {"question": "When does my favourite cafe close early?", "user": "ava"}, "expected": {"hops": [["favourite cafe"], ["closes early"]], "answer": ["Sundays"]}, "tags": {"user": "ava"}}
+{"id": "chen:q01", "input": {"question": "我哥哥做什么工作？", "user": "chen"}, "expected": {"hops": [["我哥哥"], ["工程师"]], "answer": ["工程师"]}, "tags": {"user": "chen"}}
+{"id": "chen:q02", "input": {"question": "我的导师研究什么？", "user": "chen"}, "expected": {"hops": [["我的导师"], ["海洋生物"]], "answer": ["海洋生物"]}, "tags": {"user": "chen"}}
+{"id": "chen:q03", "input": {"question": "我最好的朋友在学什么？", "user": "chen"}, "expected": {"hops": [["最好的朋友"], ["日语"]], "answer": ["日语"]}, "tags": {"user": "chen"}}
+{"id": "chen:q04", "input": {"question": "我女儿的宠物最喜欢吃什么？", "user": "chen"}, "expected": {"hops": [["女儿的仓鼠"], ["葵花籽"]], "answer": ["葵花籽"]}, "tags": {"user": "chen"}}
+{"id": "chen:q05", "input": {"question": "我的医生的诊所在哪条路？", "user": "chen"}, "expected": {"hops": [["我的医生"], ["人民路"]], "answer": ["人民路"]}, "tags": {"user": "chen"}}
+{"id": "chen:q06", "input": {"question": "我的车什么时候要保养？", "user": "chen"}, "expected": {"hops": [["白色的比亚迪"], ["保养"]], "answer": ["下个月"]}, "tags": {"user": "chen"}}
+{"id": "chen:q07", "input": {"question": "我表弟的公司做什么？", "user": "chen"}, "expected": {"hops": [["深圳做程序员"], ["做游戏"]], "answer": ["游戏"]}, "tags": {"user": "chen"}}
+{"id": "chen:q08", "input": {"question": "我每周三去的地方在哪里？", "user": "chen"}, "expected": {"hops": [["每周三去游泳"], ["体育中心"]], "answer": ["体育中心"]}, "tags": {"user": "chen"}}
+{"id": "chen:q09", "input": {"question": "我最喜欢的面馆哪天不开门？", "user": "chen"}, "expected": {"hops": [["最喜欢的面馆"], ["周一不开门"]], "answer": ["周一"]}, "tags": {"user": "chen"}}
+{"id": "chen:q10", "input": {"question": "我的房东每月几号收租？", "user": "chen"}, "expected": {"hops": [["房东姓赵"], ["五号收房租"]], "answer": ["五号"]}, "tags": {"user": "chen"}}

@@ -1,0 +1,38 @@
+[
+  {
+    "question_id": "q-pet",
+    "question_type": "single-session-user",
+    "question": "What is the name of my cat?",
+    "answer": "Miso",
+    "question_date": "2023/05/30 (Tue) 10:00",
+    "haystack_session_ids": ["s-cat", "s-garden", "s-trip"],
+    "haystack_dates": ["2023/05/20 (Sat) 09:00", "2023/05/21 (Sun) 18:30", "2023/05/22 (Mon) 08:00"],
+    "haystack_sessions": [
+      [{"role": "user", "content": "I adopted a cat and named the cat Miso.", "has_answer": true},
+       {"role": "assistant", "content": "What a lovely name for a cat!"}],
+      [{"role": "user", "content": "Any tips for growing tomatoes in a garden?"},
+       {"role": "assistant", "content": "My cat tip: keep the cat out of the garden."},
+       {"role": "user", "content": "   "}],
+      [{"role": "user", "content": "We are planning a trip to Nelson in June."},
+       {"role": "user", "content": "LONG"}]
+    ],
+    "answer_session_ids": ["s-cat"]
+  },
+  {
+    "question_id": "q-trip",
+    "question_type": "temporal-reasoning",
+    "question": "Which town is the June trip to?",
+    "answer": "Nelson",
+    "question_date": "2023/06/01 (Thu) 10:00",
+    "haystack_session_ids": ["s-garden", "s-trip"],
+    "haystack_dates": ["2023/05/21 (Sun) 18:30", "2023/05/22 (Mon) 08:00"],
+    "haystack_sessions": [
+      [{"role": "user", "content": "Any tips for growing tomatoes in a garden?"},
+       {"role": "assistant", "content": "My cat tip: keep the cat out of the garden."},
+       {"role": "user", "content": "   "}],
+      [{"role": "user", "content": "We are planning a trip to Nelson in June.", "has_answer": true},
+       {"role": "user", "content": "LONG"}]
+    ],
+    "answer_session_ids": ["s-trip"]
+  }
+]

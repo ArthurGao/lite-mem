@@ -24,6 +24,8 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
+**S11 (2026-11-14): the two-hop eval and LongMemEval run on lite-eval** (design §8, §12; `src/lite_mem/eval_target.py`, `eval/lite-eval/`). Benchmark files are downloaded into a temp dir per run and deleted after it; never kept or committed.
+
 **S10 done 2026-11-12: no memory graph; `search(follow_up=N)` instead** (design §5, §12 S10 record: two-hop recall 13/20 → 20/20 at top 5, single-hop unchanged). S0–S9 done 2026-11-12 (S9's adapter lives in llm-steward); eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
 
 ## Rules
@@ -66,6 +68,8 @@ uv run ruff check && uv run ruff format --check && uv run mypy
 uv run litemem migrate           # schema LITEMEM_DB_SCHEMA (default lite_mem) on LITEMEM_DATABASE_URL
 uv run litemem add|search|history|erase ...
 uv run litemem eval              # design §8
+uv run lite-eval run eval/lite-eval/suites/multihop.yaml   # two-hop recall (needs Ollama bge-m3)
+uv run python eval/longmemeval.py s|m|oracle [--limit N]  # downloads to a temp dir, deletes it after
 uv run --extra server litemem serve   # 127.0.0.1:8710
 ```
 

@@ -12,3 +12,7 @@ build/
 *.egg-info/
 eval/reports/
 .DS_Store
+
+# lite-eval: run records and the Viewer index and output cache (results go to the KB)
+eval/lite-eval/runs/
+eval/lite-eval/.lite-eval/

@@ -36,6 +36,9 @@ server = [
 eval = [
     "mem0ai==2.2.1",
     "ollama==0.6.3",  # mem0 imports it for its ollama embedder, without declaring it
+    # The two-hop eval and LongMemEval run on lite-eval (design §8), pinned to a commit in
+    # [tool.uv.sources]: an upgrade re-runs tests/integration/test_eval_target.py.
+    "lite-eval",
 ]
 
 [dependency-groups]
@@ -77,3 +80,6 @@ filterwarnings = ["ignore::SyntaxWarning:jieba.*"]
 markers = [
     "ollama: talks to the real Ollama server (opt-in: uv run pytest -m ollama)",
 ]
+
+[tool.uv.sources]
+lite-eval = { git = "https://github.com/ArthurGao/lite-eval", subdirectory = "backend", rev = "75fab3e3b8372335af6cf8661ca062d4a0518d59" }
