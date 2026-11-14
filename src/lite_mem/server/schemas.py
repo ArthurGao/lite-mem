@@ -25,6 +25,8 @@ class ScopeIn(_Body):
 
 class MessageIn(_Body):
     role: Literal["user", "assistant", "system"]
+    # The bound for infer=true; with infer=false a user message is one memory, and the engine
+    # holds it to MAX_FACT_CHARS (HTTP 400, like every other engine check of a write).
     content: str = Field(max_length=MAX_MESSAGE_CHARS)
 
 

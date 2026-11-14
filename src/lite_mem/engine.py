@@ -197,7 +197,9 @@ class MemoryEngine:
         idempotency_key: str | None = None,
     ) -> list[MemoryEvent]:
         """Remember what a conversation says. `infer=False`: each user message is stored as said
-        (one semantic memory each). `infer=True` (design §2): the extractor proposes facts, each
+        (one semantic memory each, so at most MAX_FACT_CHARS; a longer one refuses the whole write,
+        before anything is stored). `infer=True` (design §2): messages up to MAX_MESSAGE_CHARS go
+        to the extractor, which proposes facts, each
         is compared with its related memories in exactly this scope and resolved (ADD, UPDATE as
         SUPERSEDE, DELETE, NOOP), and the whole batch is written in one transaction. Model calls
         run outside any transaction; a retry with the same key replays without calling them."""
@@ -205,6 +207,13 @@ class MemoryEngine:
             raise InvalidRequest(f"at most {MAX_MESSAGES} messages per write")
         if any(len(m.content) > MAX_MESSAGE_CHARS for m in messages):
             raise InvalidRequest(f"a message is at most {MAX_MESSAGE_CHARS} characters")
+        if not infer and any(
+            m.role == "user" and len(m.content.strip()) > MAX_FACT_CHARS for m in messages
+        ):
+            raise InvalidRequest(
+                "with infer=false each user message is stored as one memory: "
+                f"at most {MAX_FACT_CHARS} characters"
+            )
         metadata = self._stated_metadata(metadata or {})
         if infer:
             return self._infer(messages, scope, metadata, idempotency_key)

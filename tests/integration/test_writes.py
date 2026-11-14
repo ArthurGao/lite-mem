@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from lite_mem.engine import MemoryEngine
+from lite_mem.engine import MAX_FACT_CHARS, MemoryEngine
 from lite_mem.errors import Conflict, InvalidRequest, NotFound
 from lite_mem.stores.base import Store
 from lite_mem.testing import FakeEmbedder
@@ -244,3 +244,20 @@ def test_concurrent_first_values_of_one_profile_key_leave_one_current(
 def test_empty_scope_ids_are_refused(engine: MemoryEngine, scope: Scope) -> None:
     with pytest.raises(InvalidRequest, match="scope"):
         engine.remember(Fact("x"), scope)
+
+
+def test_a_message_stored_as_said_is_held_to_a_memory_s_length_up_front(
+    engine: MemoryEngine,
+) -> None:
+    """S11 (LongMemEval): `add` takes messages up to MAX_MESSAGE_CHARS for the extractor, but
+    with infer=False each user message is one memory, at most MAX_FACT_CHARS. The write is refused
+    whole, before anything is screened or stored, and the error says which limit and why."""
+    scope = Scope(user_id="u")
+    long = "x" * (MAX_FACT_CHARS + 1)
+    with pytest.raises(InvalidRequest, match=r"infer=false.*one memory.*2000 characters"):
+        engine.add([Message("user", "short"), Message("user", long)], scope, infer=False)
+    assert engine.list_memories(scope) == []
+    # Surrounding white space does not count, as for any memory; assistant turns are not stored
+    padded = "  " + "y" * MAX_FACT_CHARS + "\n"
+    events = engine.add([Message("user", padded), Message("assistant", long)], scope, infer=False)
+    assert [e.content for e in events] == ["y" * MAX_FACT_CHARS]
