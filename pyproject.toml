@@ -36,8 +36,9 @@ server = [
 eval = [
     "mem0ai==2.2.1",
     "ollama==0.6.3",  # mem0 imports it for its ollama embedder, without declaring it
-    # The two-hop eval and LongMemEval run on lite-eval (design §8), pinned to a commit in
-    # [tool.uv.sources]: an upgrade re-runs tests/integration/test_eval_target.py.
+    # The two-hop eval and LongMemEval run on lite-eval (design §8), installed from a release
+    # wheel in [tool.uv.sources] (it carries the Viewer; a git install does not): an upgrade
+    # re-runs tests/integration/test_eval_target.py.
     "lite-eval",
 ]
 
@@ -82,4 +83,4 @@ markers = [
 ]
 
 [tool.uv.sources]
-lite-eval = { git = "https://github.com/ArthurGao/lite-eval", subdirectory = "backend", rev = "75fab3e3b8372335af6cf8661ca062d4a0518d59" }
+lite-eval = { url = "https://github.com/ArthurGao/lite-eval/releases/download/v0.2.0/lite_eval-0.2.0-py3-none-any.whl" }
