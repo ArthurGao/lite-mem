@@ -2,18 +2,18 @@
 contract tests). They never touch the network or a model (AGENTS.md rule 10)."""
 
 import hashlib
+import json
 import math
 import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel
+from lite_model.testing import FakeCall, FakeModel
 
-from lite_mem.config import Role
 from lite_mem.extract import ExtractedFact, Extraction, normalise
-from lite_mem.llm import Provenance
+from lite_mem.llm import LiteModelLLM
 from lite_mem.types import Memory, MemoryType, Message, Scope
 
 # Latin words, digits, and each CJK character on its own.
@@ -54,25 +54,27 @@ class FakeEmbedder:
         return [v / norm for v in vec]
 
 
-class FakeLLM:
-    """Scripted structured answers per role; records every call (role, the JSON payload sent)."""
-
-    provider = "fake"
-    model = "fake-llm"
+class FakeLLM(LiteModelLLM):
+    """lite-mem's LLM adapter over lite-model's `FakeModel`: each role's answer is computed from
+    the payload sent; every call is recorded (role, the JSON payload). Provenance says
+    `fake:fake-model`, so a scripted answer is never mistaken for a model's."""
 
     def __init__(self, **handlers: Handler) -> None:
-        self._handlers: dict[str, Handler] = handlers
-        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.fake = FakeModel(**{role: _from_payload(h) for role, h in handlers.items()})
+        super().__init__(self.fake)
 
-    def structured[T: BaseModel](
-        self, role: Role, system: str, payload: Mapping[str, Any], schema: type[T]
-    ) -> tuple[T, Provenance]:
-        sent = dict(payload)
-        self.calls.append((role, sent))
-        if role not in self._handlers:
-            raise AssertionError(f"FakeLLM has no answer scripted for role {role!r}")
-        answer = self._handlers[role](sent)
-        return schema.model_validate(answer), Provenance(role, self.provider, self.model)
+    @property
+    def calls(self) -> list[tuple[str, dict[str, Any]]]:
+        return [(c.role, _payload(c)) for c in self.fake.calls]
+
+
+def _payload(call: FakeCall) -> dict[str, Any]:
+    """The payload LiteModelLLM sent: the user turn, as JSON."""
+    return json.loads(call.messages[-1].content)  # type: ignore[no-any-return]
+
+
+def _from_payload(handler: Handler) -> Callable[[FakeCall], dict[str, Any]]:
+    return lambda call: handler(_payload(call))
 
 
 def memory(content: str, *, type: MemoryType = "semantic", scope: Scope | None = None) -> Memory:

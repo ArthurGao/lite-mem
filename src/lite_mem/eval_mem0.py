@@ -21,6 +21,8 @@ from psycopg import sql
 
 from lite_mem.config import OLLAMA_URL, Settings
 from lite_mem.embedding import build_embedder
+from lite_mem.errors import ConfigError
+from lite_mem.llm import build_model
 
 SCHEMA = "mem0_eval"
 LIST_LIMIT = 1000  # far above one eval user's memories; the collection is fresh per run
@@ -40,7 +42,9 @@ class Mem0System:
         self._schema, self._collection = schema, f"run_{uuid.uuid4().hex[:12]}"
         with psycopg.connect(self._url, autocommit=True) as conn:
             conn.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema)))
-        llm = settings.llm.target("extract")
+        llm = build_model(settings.llm).target("extract")  # mem0 calls the model itself
+        if llm.base_url is None:  # mem0's openai provider would default to api.openai.com
+            raise ConfigError(f"mem0 needs an endpoint for {llm.backend}: set its base_url")
         dim = build_embedder(settings.embedding).dim  # probes once when not configured
         options = quote(f"-csearch_path={schema},public")
         joiner = "&" if "?" in self._url else "?"
@@ -49,8 +53,9 @@ class Mem0System:
                 "provider": "openai",
                 "config": {
                     "model": llm.model,
-                    "openai_base_url": llm.base_url or f"{OLLAMA_URL}/v1",
-                    "api_key": llm.api_key.get_secret_value() if llm.api_key else "unused",
+                    "openai_base_url": llm.base_url,
+                    # lite-model reads keys only from the variable it names
+                    "api_key": os.environ.get(llm.api_key_env or "") or "unused",
                 },
             },
             "embedder": {

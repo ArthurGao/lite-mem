@@ -113,7 +113,7 @@ def test_similar_memories_merge_into_one_with_merge_history(store: Store, clock:
         assert closed.superseded_by == merged.id and closed.valid_to == clock.now
         assert [h.op for h in engine.history(old)] == ["ADD", "MERGE"]
     [made] = engine.history(merged.id)
-    assert made.op == "MERGE" and made.produced_by == "fake:fake-llm"
+    assert made.op == "MERGE" and made.produced_by == "fake:fake-model"
     assert set(made.after["merged_from"]) == {str(a.memory_id), str(b.memory_id)}
     # the events a mirror (llm-steward) maps: one per memory closed, into the merged one
     assert {(e.op, e.memory_id, e.replaced) for e in report.events} == {

@@ -71,19 +71,25 @@ def test_described_settings_keep_no_credentials() -> None:
         {
             "database_url": "postgresql://u:dbpw@db.test/x",
             "llm": {
-                "base_url": "http://u:urlpw@llm.test:8080/v1?api_key=qkey",
-                "api_key": "llmkey",
-                "roles": {"resolve": {"base_url": "https://r.test/v1?token=rtok"}},
+                "backends": {
+                    "openai": {
+                        "type": "openai",
+                        "keyless": True,
+                        "base_url": "http://u:urlpw@llm.test:8080/v1?api_key=qkey",
+                    },
+                    "r": {"type": "openai", "base_url": "https://r.test/v1?token=rtok"},
+                },
+                "roles": {"resolve": {"backend": "r"}},
             },
             "embedding": {"base_url": "http://e.test/api", "api_key": "embkey"},
         }
     )
     described = ev.describe(settings, {"llm", "embedding", "pipeline"})
     text = json.dumps(described)
-    for secret in ("dbpw", "urlpw", "qkey", "llmkey", "rtok", "embkey", "database_url"):
+    for secret in ("dbpw", "urlpw", "qkey", "rtok", "embkey", "database_url"):
         assert secret not in text
-    assert described["llm"]["base_url"] == "http://llm.test:8080/v1"
-    assert described["llm"]["roles"]["resolve"]["base_url"] == "https://r.test/v1"
+    assert described["llm"]["backends"]["openai"]["base_url"] == "http://llm.test:8080/v1"
+    assert described["llm"]["backends"]["r"]["base_url"] == "https://r.test/v1"
     assert described["embedding"]["base_url"] == "http://e.test/api"
     assert described["llm"]["model"] == settings.llm.model
 
@@ -151,5 +157,5 @@ def test_variants_override_the_settings_and_get_their_own_namespace() -> None:
     base = Settings(_env_file=None, namespace="app")  # type: ignore[call-arg]
     s = ev.variant_settings(base, "add_only", "lite_mem_eval")
     assert (s.namespace, s.db_schema) == ("eval/add-only", "lite_mem_eval")
-    assert (s.pipeline.resolver, s.llm.reasoning) == ("add_only", "none")
-    assert ev.variant_settings(base, "thinking", "lite_mem_eval").llm.reasoning is None
+    assert (s.pipeline.resolver, s.llm.reasoning_effort) == ("add_only", "none")
+    assert ev.variant_settings(base, "thinking", "lite_mem_eval").llm.reasoning_effort is None

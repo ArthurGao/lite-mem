@@ -24,6 +24,8 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
+**S12 done 2026-11-18: every LLM call goes through lite-model 0.1.1** (design §3, §12 S12 record; `src/lite_mem/llm.py` is the adapter, `tests/unit/test_llm_requests.py` pins the request bodies).
+
 **S11 (2026-11-14): the two-hop eval and LongMemEval run on lite-eval** (design §8, §12; `src/lite_mem/eval_target.py`, `eval/lite-eval/`). Benchmark files are downloaded into a temp dir per run and deleted after it; never kept or committed.
 
 **S10 done 2026-11-12: no memory graph; `search(follow_up=N)` instead** (design §5, §12 S10 record: two-hop recall 13/20 → 20/20 at top 5, single-hop unchanged). S0–S9 done 2026-11-12 (S9's adapter lives in llm-steward); eval results in the KB (`projects/lite-mem/reference/eval-results.md`).
@@ -42,7 +44,10 @@ If a change must contradict the design, update the design in the same change and
 5. **The model proposes, code decides**: structured output (Pydantic) for every LLM call; an UPDATE/DELETE
    target outside the candidates is not applied; extracted facts are trimmed, de-duplicated and capped.
 6. **Every LLM call names a role** (`extract`, `resolve`, `consolidate`), never a model; config maps roles to
-   models. No fallback chain: a failed call raises. Every model-made change records `provider:model`.
+   models. Calls go through lite-model (`src/lite_mem/llm.py` is only the adapter, S12): its rules apply — no
+   fallback chain (a failed call raises after retries on the same model), the answering model read from the
+   response, error messages without upstream text, keys only through `api_key_env`. No role is routable.
+   Every model-made change records `provider:model` (the lite-model backend name: `openai` by default).
 7. **Prompts live in `src/lite_mem/prompts/*.j2`**, never inline strings.
 8. **An index is bound to its model**: a namespace records its embedding model and dim; a mismatch raises.
 9. **Secrets only from environment variables.** Never commit `.env*` except `.env.example`.
@@ -51,12 +56,15 @@ If a change must contradict the design, update the design in the same change and
     schema `lite_mem_test`), never the app schema. Never call llm-gateway subscription profiles from tests or
     on your own initiative.
 11. **Measure, don't guess**: a change meant to improve memory quality comes with an eval run before and after.
-12. **Pinned dependencies** for the engines (psycopg, jieba, SDKs): exact versions.
+12. **Pinned dependencies** for the engines (psycopg, jieba): exact versions. lite-model is a release wheel
+    in `[tool.uv.sources]` and pins the SDKs; an upgrade re-runs `tests/unit/test_llm_requests.py` (the request
+    bodies) and `-m ollama`.
 
 ## Tech stack
 
-Python 3.12, uv, pydantic / pydantic-settings, Typer, PostgreSQL + pgvector (psycopg 3), jieba, OpenAI SDK
-(OpenAI-compatible LLMs and Ollama `/v1`), Anthropic SDK (extra), Jinja2, FastAPI (extra), pytest, ruff, mypy.
+Python 3.12, uv, pydantic / pydantic-settings, Typer, PostgreSQL + pgvector (psycopg 3), jieba, lite-model
+(every LLM call: OpenAI-compatible endpoints and Ollama `/v1`, Anthropic with the extra), Jinja2, FastAPI
+(extra), pytest, ruff, mypy.
 Ollama on the host (`127.0.0.1:11434`, `bge-m3:567m`, `qwen3:8b`).
 
 ## Commands

@@ -1,0 +1,247 @@
+{
+  "at": "2026-11-18T07:35:48+00:00",
+  "git": "fce155b",
+  "dataset": "eval/dataset.json",
+  "dataset_sha256": "52678ce502dbaf3a86812e5da134f397f6f9aa8f807ccbc1a0d083413b5a1d71",
+  "k": 3,
+  "settings": {
+    "resolve": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "temperature": null,
+        "max_output_tokens": null,
+        "reasoning_effort": "none",
+        "timeout_s": 120.0,
+        "connect_timeout_s": 10.0,
+        "max_retries": 2,
+        "backend": "openai",
+        "model": "qwen3:8b",
+        "roles": {},
+        "backends": {
+          "ollama": {
+            "type": "ollama",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "openai": {
+            "type": "openai",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": true
+          },
+          "anthropic": {
+            "type": "anthropic",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "gateway": {
+            "type": "gateway",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "litellm": {
+            "type": "litellm",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [
+              "smart-router"
+            ],
+            "keyless": false
+          }
+        },
+        "forbid_channels": [],
+        "prices": {}
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    },
+    "terse_prompt": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "temperature": null,
+        "max_output_tokens": null,
+        "reasoning_effort": "none",
+        "timeout_s": 120.0,
+        "connect_timeout_s": 10.0,
+        "max_retries": 2,
+        "backend": "openai",
+        "model": "qwen3:8b",
+        "roles": {},
+        "backends": {
+          "ollama": {
+            "type": "ollama",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "openai": {
+            "type": "openai",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": true
+          },
+          "anthropic": {
+            "type": "anthropic",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "gateway": {
+            "type": "gateway",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "litellm": {
+            "type": "litellm",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [
+              "smart-router"
+            ],
+            "keyless": false
+          }
+        },
+        "forbid_channels": [],
+        "prices": {}
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    }
+  },
+  "reports": [
+    {
+      "system": "resolve",
+      "k": 3,
+      "present": 19,
+      "remembered": 17,
+      "stale_checks": 7,
+      "stale": 0,
+      "questions": 11,
+      "hits": 10,
+      "memories": 19,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        250.97341454200796,
+        22.718118333024904,
+        12.323537249991205,
+        250.2846781249973,
+        8.722184165992076,
+        8.7621148340113,
+        17.688861165981507,
+        6.690034208004363,
+        13.279223708988866,
+        18.272222667001188,
+        6.178387040999951
+      ],
+      "misses": [
+        "xiaowang s1: forgot '会计'",
+        "xiaowang s3: forgot '上海'",
+        "xiaowang: no hit for '她现在住在哪个城市？'"
+      ],
+      "recall": 0.8947368421052632,
+      "stale_rate": 0.0,
+      "hit_rate": 0.9090909090909091
+    },
+    {
+      "system": "terse_prompt",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 1,
+      "questions": 11,
+      "hits": 10,
+      "memories": 14,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        132.65678595899954,
+        17.34285670798272,
+        12.728153540985659,
+        130.65284525000607,
+        9.6724994580145,
+        0.5501807920227293,
+        11.641014292021282,
+        5.797808415984036,
+        9.064316291012801,
+        4.831274041993311,
+        16.885636833001627
+      ],
+      "misses": [
+        "emma s2: forgot 'Mo'",
+        "emma: no hit for \"What is her dog's name?\"",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.14285714285714285,
+      "hit_rate": 0.9090909090909091
+    }
+  ]
+}

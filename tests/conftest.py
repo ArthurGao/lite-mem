@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import psycopg
 import pytest
 from psycopg import sql
@@ -134,3 +135,13 @@ def count_rows(store: Store, table: str, user_id: str | None = None) -> int:
 def current(engine: MemoryEngine, scope: Scope | None = None) -> list[str]:
     """The scope's current memories' contents, sorted (default: user "ada")."""
     return sorted(m.content for m in engine.list_memories(scope or Scope(user_id="ada")))
+
+
+def openai_reply(model: str, content: str, finish: str = "stop") -> httpx2.Response:
+    """A chat completion as an OpenAI-compatible endpoint returns it (for a recording transport)."""
+    return httpx2.Response(200, json={
+        "id": "c", "object": "chat.completion", "created": 0, "model": model,
+        "choices": [{"index": 0, "finish_reason": finish,
+                     "message": {"role": "assistant", "content": content}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    })  # fmt: skip

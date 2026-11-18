@@ -35,14 +35,14 @@ def _say(engine: MemoryEngine, scope: Scope, *texts: str, **kw: Any) -> Any:
 def test_beijing_then_shanghai_supersedes(store: Store, clock: Clock) -> None:
     engine, llm = _engine(store, clock, update_when("搬"))
     [first] = _say(engine, ADA, "我住北京")
-    assert (first.op, first.produced_by) == ("ADD", "fake:fake-llm")
+    assert (first.op, first.produced_by) == ("ADD", "fake:fake-model")
     then = clock.now
     clock.tick()
     [moved] = _say(engine, ADA, "我搬到上海了")
     assert (moved.op, moved.replaced, moved.produced_by) == (
         "SUPERSEDE",
         first.memory_id,
-        "fake:fake-llm",
+        "fake:fake-model",
     )
     assert current(engine) == ["我搬到上海了"]
     assert [m.content for m in engine.list_memories(ADA, as_of=then)] == ["我住北京"]
@@ -78,7 +78,7 @@ def test_delete_retires_the_old_fact_and_keeps_the_new_one(store: Store, clock: 
     _say(engine, ADA, "Has a cat")
     events = _say(engine, ADA, "No longer has a cat")
     assert [e.op for e in events] == ["DELETE", "ADD"]
-    assert events[0].reason == "gone" and events[0].produced_by == "fake:fake-llm"
+    assert events[0].reason == "gone" and events[0].produced_by == "fake:fake-model"
     assert current(engine) == ["No longer has a cat"]
 
 
@@ -148,9 +148,9 @@ def test_a_real_round_trip_with_local_models(store: Store, clock: Clock) -> None
     """qwen3:8b extracts and resolves, bge-m3 embeds — all on the local Ollama."""
     from lite_mem.config import EmbeddingConfig, LLMConfig
     from lite_mem.embedding import OllamaEmbedder
-    from lite_mem.llm import RoutedLLM
+    from lite_mem.llm import LiteModelLLM
 
-    llm = RoutedLLM(LLMConfig())
+    llm = LiteModelLLM.build(LLMConfig())
     engine = MemoryEngine(
         store, "real", OllamaEmbedder(EmbeddingConfig()), extractor=LlmExtractor(llm),
         resolver=LlmResolver(llm), clock=clock,
@@ -240,7 +240,7 @@ def test_an_update_keeps_the_part_of_a_compound_fact_that_still_holds(
     by_op = {e.op: e for e in events}
     assert by_op["SUPERSEDE"].replaced == first.memory_id
     kept = by_op["ADD"]
-    assert kept.content == "works as a nurse" and kept.produced_by == "fake:fake-llm"
+    assert kept.content == "works as a nurse" and kept.produced_by == "fake:fake-model"
     assert str(first.memory_id) in (kept.reason or "")
 
 

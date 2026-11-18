@@ -44,7 +44,12 @@ def test_each_run_is_isolated_and_cleans_up_only_its_own(
     settings = Settings.model_validate(
         {
             "database_url": pg_url,
-            "llm": {"model": "some-llm", "base_url": "http://llm.test/v1"},
+            "llm": {
+                "model": "some-llm",
+                "backends": {
+                    "openai": {"type": "openai", "base_url": "http://llm.test/v1", "keyless": True}
+                },
+            },
             "embedding": {"model": "some-embedder", "dim": 8},
         }
     )

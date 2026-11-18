@@ -263,7 +263,7 @@ class Variant:
     maintain: bool = False  # run `maintain` after each session
 
 
-_NO_THINKING = {"llm": {"reasoning": "none"}}
+_NO_THINKING = {"llm": {"reasoning_effort": "none"}}
 _TERSE = {**_NO_THINKING, "pipeline": {"extract_prompt": "extract_facts_terse.j2"}}
 VARIANTS: dict[str, Variant] = {
     "resolve": Variant(_NO_THINKING),

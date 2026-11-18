@@ -67,10 +67,14 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 | `Consolidator` | `merge(memories) -> MergeDecision`，`summarise(episodes) -> Summary[]` | `LlmConsolidator`（`consolidate_merge.j2`、`consolidate_summarise.j2`） | — |
 | `Embedder` | `embed(texts) -> vectors`，`dim`，`model` | Ollama `bge-m3` | OpenAI 兼容 |
 | `Store` | 见 §4 | `PgStore` | `SqliteStore`（sqlite-vec + 自己的倒排，S7b，嵌入式） |
-| `LLM` | `structured(role, system, payload, schema) -> (结果, 出处)` | OpenAI 兼容（含 Ollama `/v1`） | Anthropic（extra） |
+| `LLM` | `structured(role, system, payload, schema) -> (结果, 出处)` | `LiteModelLLM`：接到 lite-model（S12 起），任何 OpenAI 兼容端点（含 Ollama `/v1`）、Anthropic（extra）、llm-gateway、LiteLLM | `testing.FakeLLM`（基于 lite-model 的 `FakeModel`） |
 
-- **角色（role）**：`extract`、`resolve`、`consolidate`。配置把角色映射到 provider 和模型；任何一次 LLM 调用都只说角色，不写模型名。
-- **出处**：每条由模型产生的记忆或变更，都带 `provider:model`（写进历史事件）。
+- **角色（role）**：`extract`、`resolve`、`consolidate`。配置把角色映射到 backend 和模型；任何一次 LLM 调用都只说角色，不写模型名。
+  S12 起模型调用由 lite-model 完成（它的设计 §12）：配置是 lite-model 的 `ModelsConfig`（`LITEMEM_LLM__BACKEND`、`__MODEL`、
+  `__ROLES`、`__BACKENDS`、`__REASONING_EFFORT`…），启动时（`open_components`）整体校验；没有 fallback，重试只在同一个模型上。
+  三个角色都不可路由（LiteLLM 的路由别名在启动时被拒绝）：路由器挑的模型写下的记忆没法和配置的模型对照。
+- **出处**：每条由模型产生的记忆或变更，都带 `provider:model`（写进历史事件）：provider 是 lite-model 的 backend 名
+  （默认 `openai`，所以和 S12 之前的记录格式相同），model 是响应里说的、实际回答的模型。
 - **代码决定**（同 llm-steward 的做法）：
   - 模型给出的 UPDATE/DELETE 目标不在候选里，不执行，按 ADD 处理；
   - 抽取结果要去空白、去重，并截断条数和长度。
@@ -205,7 +209,7 @@ pydantic-settings，前缀 `LITEMEM_`：
 
 - 数据库 URL、namespace；
 - embedding provider 和模型；
-- 每个角色对应的 LLM provider 和模型；
+- 每个角色对应的 LLM backend 和模型（lite-model 的配置，见 §3）；
 - 检索权重和半衰期；
 - 整合和遗忘的阈值；
 - 服务端口；
@@ -292,6 +296,7 @@ lite-mem/
 | S9 接入 llm-steward | `LiteMemProvider`（库和 HTTP 两种）；llm-steward 的事件映射（UPDATE、DELETE）；合约测试；更新 llm-steward 设计文档 | llm-steward 的记忆合约测试在两种接入方式下都通过；手动端到端：对话 → 记忆 → 更新 → 检索 |
 | S10 记忆图谱（以后） | 实体和关系的抽取与查询 | 先测多跳的缺口（2026-11-12 已测，见下面的 S10 记录）；图谱暂不做，先做查询时的二轮检索 |
 | S11 评测迁到 lite-eval | 两跳评测改成 lite-eval 的数据集、suite 和 Target；LongMemEval S / M / oracle 的检索召回 | 原脚本冻结后同进程对照：8 组配置每题命中完全相同（FakeEmbedder 进 CI，bge-m3 在 `-m ollama` 下，并与 2026-11-12 的记录数字相同）；三个变体的结果记进 KB |
+| S12 迁到 lite-model | LLM 调用改由 lite-model 完成（它的设计 §12）：`llm.py` 只留 Protocol 和 adapter，配置嵌入它的 `ModelsConfig`，FakeLLM 基于它的 `FakeModel`；删掉旧客户端 | 迁移前录下的 12 个请求（4 个调用 × 默认 / reasoning / Anthropic）和迁移后逐字段相同；`-m ollama` 通过；`litemem eval` 前后各跑两次，结果落在迁移前的波动范围内；来源格式仍是 `openai:<model>` |
 
 ### 阶段记录
 
@@ -382,6 +387,45 @@ lite-mem/
     - oracle：recall@10 0.993–0.998，只用来核对整条流程。
     - M（每题约 500 个 session，共 114 万条用户发言）：recall@10 前 10 条记忆 0.873、前 50 条 0.891（S 是 0.950 / 0.971）。掉得最多的是 single-session-preference（0.967 → 0.767）和 multi-session（0.971 → 0.841）：只说过一次的偏好，在多 10 倍的闲聊里最难找；直接问的事实（single-session-user）不受影响。二轮检索在 M 上没有显著效果（S 上 recall@5 显著 +0.007）；前 50 条比前 10 条 recall@10 显著高 0.018。墙钟 2 小时 34 分、峰值内存 2.3 GB：各题共用的历史多，嵌入缓存省了大半。文件按题型排序，前 50 题全是 single-session-assistant，`--limit` 取的样本不代表整体。
     - 不能直接和公开的 LongMemEval 检索分数比：那些按 session 或整轮（用户加助手）建索引，检索器也不同；这里只索引用户发言，也就是 lite-mem 不经过模型时存对话的方式。
+- **S12 迁到 lite-model（2026-11-18，lite-model 设计 §12 的第一个宿主）**：LLM 调用改由 lite-model 0.1.1 完成。
+  - `llm.py` 只留 `LLM` Protocol、`Provenance` 和 adapter `LiteModelLLM`（payload 照旧序列化成 JSON 的 user turn，
+    lite-model 的错误转成 lite-mem 的 `ModelError` / `ConfigError`，cause 保留）；删掉 `OpenAICompatibleLLM`、`AnthropicLLM`、
+    `RoutedLLM`、`strict_schema`，以及 `config.py` 的 `RoleOverride`、`ModelTarget`。`LLMConfig` 现在是 lite-model `ModelsConfig`
+    的子类，带 lite-mem 的默认值：backend 名 `openai`（历史里仍记 `openai:<model>`）、`type: openai` + `keyless`（lite-model 0.1.1
+    为此新增；不发 temperature）、Ollama `/v1`、qwen3:8b、`max_retries` 2（OpenAI 和 Anthropic SDK 的默认值都是 2）。
+    `FakeLLM` 基于 lite-model 的 `FakeModel`，来源变成 `fake:fake-model`。
+  - 请求体：迁移前用旧客户端录下 12 个请求（extract、resolve、merge、summarise × 默认 / reasoning 全局 + 单个 role
+    覆盖 / Anthropic），存在 `tests/data/llm_requests.json`；迁移后 URL、认证头、JSON body 逐字段相同（`test_llm_requests.py`）。
+  - 配置变化（owner 已知）：环境变量改成 lite-model 的形状（`__BACKEND`、`__BACKENDS`、`__ROLES` 里的 `backend`、
+    `__REASONING_EFFORT`）；旧的 `__BASE_URL`、`__API_KEY`、`__PROVIDER`、`__REASONING`、role 的 `provider` 在启动时被拒绝
+    （有测试）；key 只能通过 `api_key_env` 指向的变量给；Anthropic 要配 `max_output_tokens`（以前固定 2048）；role 的
+    `reasoning: default`（退回端点默认）没有对应，删掉（没有人用）。三个 role 都不可路由。
+  - 迁移中发现：只要配置了任何 backend，lite-model 会把内置的 `openai`（api.openai.com）合并进来，顶掉 lite-mem 的本机
+    Ollama，默认 role 的请求会离开本机。`LLMConfig` 的 before-validator 始终把本机 `openai` 放在给定的 backend 下面；
+    不带 type 的 `openai`（compose 只改它的 URL）逐字段合并。根本的做法（lite-model 让宿主设默认 backend）记在 lite-model §15。
+  - eval（`litemem eval -v resolve -v terse_prompt`，本机 Ollama qwen3:8b，迁移前后各两次）：
+
+    | | remembered | stale | hit@3 | errors |
+    | --- | --- | --- | --- | --- |
+    | resolve 前 1 / 前 2 | 17 / 16 | 2 / 3 | 9 / 7 | 0 / 0 |
+    | resolve 后 1 / 后 2 | 17 / 17 | 0 / 1 | 10 / 10 | 0 / 1 |
+    | terse_prompt 前 1 / 前 2 | 18 / 18 | 1 / 1 | 11 / 11 | 0 / 0 |
+    | terse_prompt 后 1 / 后 2 | 18 / 18 | 1 / 0 | 10 / 11 | 0 / 0 |
+
+    请求体相同，差别来自采样：lite-mem 不发 temperature，qwen3 用自己的默认 0.6（Ollama 日志），迁移前两次的 resolve 已经差
+    1 条记住、2 条命中。后 2 的一个 error 是 Ollama 自己的 500：迁移前那段时间日志里也有 12 个 500 和多次 2 分钟超时，都被重试
+    吸收了，这次一次调用三次都失败。读了每一条没命中的：后 1 的 terse_prompt 漏掉狗的名字，后 2 又命中了。
+  - 变异：16 处（adapter 的 JSON、本机 backend 的 type、重试、合并、错误转换、来源、可路由、FakeLLM、默认模型、类型不带的
+    openai 合并、旧变量被拒绝），全部被测试抓到。
+  - /simplify（四个审查）采纳：一个 `build_model()` 给工厂、mem0 对照和测试共用；来源直接用 lite-model 的 `tag`；mem0 对照
+    没有端点时报错（不再悄悄指向 Ollama）；FakeLLM 解析 payload 只有一处；测试共用一个假的 OpenAI 回复；httpx2 只在类型检查时导入。
+    没采纳：lite-model 让宿主设默认 backend（要发 lite-model 新版，记在它的 §15）；backend 不叫 `openai`（§12 要求来源格式不变）；
+    启动时就建客户端（为的就是启动时校验）。
+  - Codex 采纳 2 条：compose 的 `environment` 盖过 `.env`，整个 `BACKENDS` 被换掉、`.env` 里另配的 backend 丢失——改成只设
+    `LITEMEM_LLM__BACKENDS__OPENAI__BASE_URL`（先写失败的测试）；`.env.example` 补 Anthropic 的 `max_output_tokens`。
+    核实后不成立：旧变量"被悄悄忽略"（实际启动时被拒绝，补了测试固定它）；fixture 里 resolve 的 reasoning 是 none（实际是
+    high）；Anthropic 重试次数变了（两个 SDK 默认都是 2）。不采纳：显式配置的 `openai` 会改掉所有 role 的端点（这是配置本来的
+    意思，和以前的 `__BASE_URL` 一样）。
 
 ## 13. 待确认
 
@@ -390,6 +434,7 @@ lite-mem/
   - llm-steward 消解，引擎只抽取：治理层能看到每一次判断，但多一次往返。
 - **合并阈值、遗忘阈值的默认值**：合并 0.92（S7，证据薄，见 §12）；遗忘默认关闭，等有长期使用的数据再定。
 - **和 lite-rag 共用代码**（embedding、BM25、LLM 层）还是各自独立：v1 各自独立（两个仓库都在学习期，接口还在变）；稳定后再考虑抽出一个共享小包。
+  LLM 层已经共用：S12 起由 lite-model 提供（2026-11-18）；embedding 和 BM25 仍各自独立。
 - **License**：仓库建立时用 Apache-2.0（与 llm-steward 一致），owner 可以改。
 - **S9 开始前要定的（S8 审查汇总）**：
   - 事件契约：`MemoryEvent` 加时间（EXPIRE 按到期时间失效需要它）和 scope（整个 namespace 的 `maintain` 返回的事件要能对回用户）；NOOP 是否放进写入结果（S4、S5 都推到了这里）；出处是否拆成"抽取者 / 决定者"。和 llm-steward 的 `MemoryEvent`（现在只有 ADD / UPDATE / DELETE、没有 `replaced`）一起改，只改一次。

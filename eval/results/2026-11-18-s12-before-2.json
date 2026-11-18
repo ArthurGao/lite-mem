@@ -1,0 +1,157 @@
+{
+  "at": "2026-11-18T07:04:22+00:00",
+  "git": "fce155b",
+  "dataset": "eval/dataset.json",
+  "dataset_sha256": "52678ce502dbaf3a86812e5da134f397f6f9aa8f807ccbc1a0d083413b5a1d71",
+  "k": 3,
+  "settings": {
+    "resolve": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    },
+    "terse_prompt": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "dim": null
+      },
+      "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": null,
+        "model": "qwen3:8b",
+        "roles": {},
+        "timeout_s": 120.0,
+        "reasoning": "none"
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    }
+  },
+  "reports": [
+    {
+      "system": "resolve",
+      "k": 3,
+      "present": 19,
+      "remembered": 16,
+      "stale_checks": 7,
+      "stale": 3,
+      "questions": 11,
+      "hits": 7,
+      "memories": 20,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        5.868264041986549,
+        263.49969079199946,
+        12.700523959007114,
+        130.94760691700503,
+        8.999714667006629,
+        8.704320124990772,
+        16.094325749989366,
+        6.401702292001573,
+        133.94897966700955,
+        9.443769916979363,
+        6.807411416986724
+      ],
+      "misses": [
+        "xiaowang s1: forgot '会计'",
+        "xiaowang s3: forgot '上海'",
+        "xiaowang s3: still remembers '北京'",
+        "xiaowang: no hit for '她现在住在哪个城市？'",
+        "emma s3: forgot 'Wellington'",
+        "emma s3: still remembers 'vegetarian'",
+        "emma s4: still remembers 'night shift'",
+        "emma: no hit for 'Which city does Emma live in?'",
+        "emma: no hit for 'Does she eat fish?'",
+        "emma: no hit for 'When does she work?'"
+      ],
+      "recall": 0.8421052631578947,
+      "stale_rate": 0.42857142857142855,
+      "hit_rate": 0.6363636363636364
+    },
+    {
+      "system": "terse_prompt",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 1,
+      "questions": 11,
+      "hits": 11,
+      "memories": 14,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        14.028632042027311,
+        252.2677653330029,
+        12.475851541996235,
+        13.925026292010443,
+        9.698093332990538,
+        0.5417330419877544,
+        12.489488792023621,
+        5.814574249990983,
+        9.007711249985732,
+        4.50698629199178,
+        4.622072832979029
+      ],
+      "misses": [
+        "emma s2: forgot 'Mo'",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.14285714285714285,
+      "hit_rate": 1.0
+    }
+  ]
+}

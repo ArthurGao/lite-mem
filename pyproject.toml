@@ -14,7 +14,8 @@ dependencies = [
     # The store (design §4). Pinned exactly, like lite-rag: an upgrade re-runs `-m ollama` and the eval.
     "psycopg[binary,pool]==3.3.8",
     "httpx2==2.16.0",
-    "openai==3.46.0",
+    # Every LLM call (design §3), from a release wheel in [tool.uv.sources]; it pins openai.
+    "lite-model",
 ]
 
 [project.scripts]
@@ -22,7 +23,7 @@ litemem = "lite_mem.cli:app"
 
 [project.optional-dependencies]
 anthropic = [
-    "anthropic==2.6.0",
+    "lite-model[anthropic]",
 ]
 # The embedded store (S7b): one SQLite file, no server.
 sqlite = [
@@ -83,4 +84,5 @@ markers = [
 ]
 
 [tool.uv.sources]
+lite-model = { url = "https://github.com/ArthurGao/lite-model/releases/download/v0.1.1/lite_model-0.1.1-py3-none-any.whl" }
 lite-eval = { url = "https://github.com/ArthurGao/lite-eval/releases/download/v0.4.1/lite_eval-0.4.1-py3-none-any.whl" }

@@ -33,6 +33,7 @@ services:
       LITEMEM_TEST_DATABASE_URL: ""  # the host's test database is not the container's
       # Ollama on the host, unless .env points elsewhere (a host's 127.0.0.1 is not the container's).
       LITEMEM_EMBEDDING__BASE_URL: ${LITEMEM_DOCKER_EMBEDDING_URL:-http://host.docker.internal:11434}
-      LITEMEM_LLM__BASE_URL: ${LITEMEM_DOCKER_LLM_URL:-http://host.docker.internal:11434/v1}
+      # Only the local backend's endpoint: backends named in .env are kept (merged by pydantic-settings).
+      LITEMEM_LLM__BACKENDS__OPENAI__BASE_URL: ${LITEMEM_DOCKER_LLM_URL:-http://host.docker.internal:11434/v1}
 volumes:
   db:

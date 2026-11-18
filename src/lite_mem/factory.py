@@ -11,7 +11,7 @@ from lite_mem.embedding import Embedder, build_embedder
 from lite_mem.engine import MemoryEngine, health, valid_namespace
 from lite_mem.errors import ConfigError, Refused
 from lite_mem.extract import Extractor, LlmExtractor
-from lite_mem.llm import RoutedLLM
+from lite_mem.llm import LiteModelLLM
 from lite_mem.resolve import AddOnlyResolver, LlmResolver, Resolver
 from lite_mem.sensitive import Policy
 from lite_mem.stores.base import Store
@@ -107,7 +107,7 @@ class Engines:
 def open_components(
     settings: Settings, store: Store | None = None, *, max_size: int = 4
 ) -> Components:
-    llm, pipe = RoutedLLM(settings.llm), settings.pipeline
+    llm, pipe = LiteModelLLM.build(settings.llm), settings.pipeline
     resolver: Resolver = (
         LlmResolver(llm, pipe.resolve_prompt) if pipe.resolver == "llm" else AddOnlyResolver()
     )

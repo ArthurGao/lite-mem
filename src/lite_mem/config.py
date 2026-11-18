@@ -3,9 +3,10 @@ Nested keys use `__`, e.g. `LITEMEM_LLM__MODEL=qwen3:8b`.
 
 Precedence, highest first: explicit arguments, environment, `.env`, defaults."""
 
-from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
+from lite_model import BackendConfig, ModelsConfig
+from lite_model.config import Name
 from pydantic import AfterValidator, BaseModel, Field, SecretStr, StringConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -36,12 +37,8 @@ OwnSchema = Annotated[
     AfterValidator(own_schema),
 ]
 
+# The roles of lite-mem's LLM calls (design §3); lite-model maps each to a model.
 Role = Literal["extract", "resolve", "consolidate"]
-LLMProvider = Literal["openai", "anthropic"]
-# Sent as `reasoning_effort` to OpenAI-compatible endpoints. "none" turns qwen3's thinking off on
-# Ollama /v1: 20 s -> 1 s for one short extraction on this machine (measured 2026-11-12).
-# "default" (in a role's override) clears an inherited setting: send nothing, the endpoint decides.
-Reasoning = Literal["none", "low", "medium", "high", "default"]
 
 
 class EmbeddingConfig(BaseModel):
@@ -98,57 +95,41 @@ class MaintainConfig(BaseModel):
         return value
 
 
-class RoleOverride(BaseModel):
-    """What one role uses instead of the defaults (any field left out keeps the default)."""
-
-    provider: LLMProvider | None = None
-    base_url: str | None = None
-    api_key: SecretStr | None = None
-    model: str | None = None
-    reasoning: Reasoning | None = None
+# lite-mem's `openai` backend: the local Ollama's OpenAI-compatible /v1, no key.
+_LOCAL_OPENAI = BackendConfig(type="openai", base_url=f"{OLLAMA_URL}/v1", keyless=True)
 
 
-@dataclass(frozen=True)
-class ModelTarget:
-    """Where one role's calls go: resolved from the defaults and the role's override."""
+class LLMConfig(ModelsConfig):
+    """Every LLM call names a role; lite-model's configuration maps each role to a model on a
+    backend (lite-model design §4: `backend`, `model`, `roles`, `backends`, `reasoning_effort`, …).
+    `reasoning_effort: none` turns qwen3's thinking off on Ollama: 20 s -> 1 s for one short
+    extraction on this machine (measured 2026-11-12).
 
-    provider: LLMProvider
-    base_url: str | None
-    api_key: SecretStr | None
-    model: str
-    timeout_s: float
-    reasoning: Reasoning | None = None  # None: the endpoint's default
+    lite-mem's defaults: qwen3:8b on the local Ollama through its OpenAI-compatible /v1, as before
+    lite-model. The backend is named `openai` so the history keeps recording `openai:<model>`, and
+    it is `keyless` `type: openai`, so nothing Ollama-specific (a temperature) is added to the
+    request (S12: the request bodies are unchanged). `max_retries` 2 is the OpenAI SDK's own
+    default, which lite-mem had."""
 
+    backend: Name = "openai"
+    model: Name = "qwen3:8b"
+    max_retries: int = Field(default=2, ge=0)
+    # Given backends over lite-mem's `openai` (below), then over lite-model's built-ins (its own
+    # validator; validate_default so the defaults get both).
+    backends: dict[str, BackendConfig] = Field(default_factory=dict, validate_default=True)
 
-def _reasoning(value: Reasoning | None) -> Reasoning | None:
-    return None if value == "default" else value
-
-
-class LLMConfig(BaseModel):
-    """Every LLM call names a role; this maps each role to a provider, endpoint and model
-    (design §3). The top-level fields are the defaults; `roles` overrides them per role."""
-
-    # openai: any OpenAI-compatible endpoint (Ollama /v1, llm-gateway, a vendor); anthropic: extra.
-    provider: LLMProvider = "openai"
-    base_url: str | None = f"{OLLAMA_URL}/v1"
-    api_key: SecretStr | None = None
-    model: str = "qwen3:8b"
-    roles: dict[Role, RoleOverride] = Field(default_factory=dict)
-    timeout_s: float = Field(default=120.0, gt=0)
-    reasoning: Reasoning | None = None
-
-    def target(self, role: Role) -> ModelTarget:
-        o = self.roles.get(role, RoleOverride())
-        provider = o.provider or self.provider
-        switched = provider != self.provider  # another provider: never reuse this one's endpoint
-        return ModelTarget(
-            provider=provider,
-            base_url=o.base_url if (o.base_url or switched) else self.base_url,
-            api_key=o.api_key if (o.api_key or switched) else self.api_key,
-            model=o.model or self.model,
-            timeout_s=self.timeout_s,
-            reasoning=_reasoning(o.reasoning if o.reasoning is not None else self.reasoning),
-        )
+    @field_validator("backends", mode="before")
+    @classmethod
+    def _over_local_openai(cls, value: Any) -> Any:
+        """Adding a backend must not turn `openai` into lite-model's built-in (api.openai.com):
+        the default role would leave the machine (found in S12). An `openai` given without a type
+        changes lite-mem's own one field by field (compose sets only its endpoint)."""
+        if not isinstance(value, dict):
+            return value
+        given = value.get("openai")
+        if isinstance(given, dict) and "type" not in given:
+            value = {**value, "openai": {**_LOCAL_OPENAI.model_dump(exclude_unset=True), **given}}
+        return {"openai": _LOCAL_OPENAI, **value}
 
 
 class SearchConfig(BaseModel):
