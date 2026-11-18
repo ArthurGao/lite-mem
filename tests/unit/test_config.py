@@ -34,15 +34,12 @@ def test_env_maps_roles_to_models(monkeypatch: pytest.MonkeyPatch) -> None:
     assert extract.base_url == resolve.base_url == "http://127.0.0.1:11434/v1"
 
 
-def test_a_keyed_openai_must_say_it_is_not_keyless(monkeypatch: pytest.MonkeyPatch) -> None:
-    # lite-model 0.2.0 layers it over the local, keyless `openai`: a key alone is refused at
-    # startup (never sent nowhere); `keyless: false` with it points `openai` at a keyed endpoint
+def test_a_key_variable_points_openai_at_a_keyed_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    # lite-model 0.2.1: the key's source is one choice, so `api_key_env` over the local, keyless
+    # `openai` replaces `keyless` (0.2.0 refused it unless `keyless: false` was written too)
     keyed = {"type": "openai", "base_url": "https://vendor.test/v1", "api_key_env": "VENDOR_KEY"}
     monkeypatch.setenv("VENDOR_KEY", "k")
     monkeypatch.setenv("LITEMEM_LLM__BACKENDS", json.dumps({"openai": keyed}))
-    with pytest.raises(ValidationError, match="keyless and api_key_env cannot both be set"):
-        Settings(_env_file=None)  # type: ignore[call-arg]
-    monkeypatch.setenv("LITEMEM_LLM__BACKENDS", json.dumps({"openai": {**keyed, "keyless": False}}))
     t = _target(Settings(_env_file=None), "extract")  # type: ignore[call-arg]
     assert (t.base_url, t.api_key_env) == ("https://vendor.test/v1", "VENDOR_KEY")
 

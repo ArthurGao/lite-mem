@@ -404,8 +404,8 @@ lite-mem/
     Ollama，默认 role 的请求会离开本机。`LLMConfig` 的 before-validator 始终把本机 `openai` 放在给定的 backend 下面；
     不带 type 的 `openai`（compose 只改它的 URL）逐字段合并。根本的做法（lite-model 让宿主设默认 backend）记在 lite-model §15。
     2026-11-19 改用 lite-model 0.2.0 的 `host_backends`（宿主默认 backend，逐字段叠加），删掉这个 validator。行为一处不同：
-    带 `type: openai` 的 `openai` 以前整个替换本机的，现在也逐字段叠加（只有换了 type 才替换）——给全字段的配置结果一样；把 `openai` 指向要 key 的端点时要同时写
-    `keyless: false`，否则启动时报 "keyless and api_key_env cannot both be set"（有测试；接厂商的正路是另起一个名字的 backend）。
+    带 `type: openai` 的 `openai` 以前整个替换本机的，现在也逐字段叠加（只有换了 type 才替换）——给全字段的配置结果一样。把 `openai` 指向要 key 的端点：0.2.0 要同时写
+    `keyless: false`，lite-model 0.2.1（同日）起只写 `api_key_env` 即可（key 的来源算一个选择；有测试）。
     去掉 `host_backends` 有 5 个测试失败。
   - eval（`litemem eval -v resolve -v terse_prompt`，本机 Ollama qwen3:8b，迁移前后各两次）：
 
