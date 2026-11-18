@@ -3,7 +3,8 @@ Nested keys use `__`, e.g. `LITEMEM_LLM__MODEL=qwen3:8b`.
 
 Precedence, highest first: explicit arguments, environment, `.env`, defaults."""
 
-from typing import Annotated, Any, Literal
+from collections.abc import Mapping
+from typing import Annotated, ClassVar, Literal
 
 from lite_model import BackendConfig, ModelsConfig
 from lite_model.config import Name
@@ -111,25 +112,14 @@ class LLMConfig(ModelsConfig):
     request (S12: the request bodies are unchanged). `max_retries` 2 is the OpenAI SDK's own
     default, which lite-mem had."""
 
+    # Adding a backend, or setting one field of `openai` (compose sets only its endpoint), keeps
+    # this local one: never lite-model's built-in `openai` (api.openai.com), where the default
+    # role would leave the machine (found in S12). Only an `openai` of another type replaces it.
+    host_backends: ClassVar[Mapping[str, BackendConfig]] = {"openai": _LOCAL_OPENAI}
+
     backend: Name = "openai"
     model: Name = "qwen3:8b"
     max_retries: int = Field(default=2, ge=0)
-    # Given backends over lite-mem's `openai` (below), then over lite-model's built-ins (its own
-    # validator; validate_default so the defaults get both).
-    backends: dict[str, BackendConfig] = Field(default_factory=dict, validate_default=True)
-
-    @field_validator("backends", mode="before")
-    @classmethod
-    def _over_local_openai(cls, value: Any) -> Any:
-        """Adding a backend must not turn `openai` into lite-model's built-in (api.openai.com):
-        the default role would leave the machine (found in S12). An `openai` given without a type
-        changes lite-mem's own one field by field (compose sets only its endpoint)."""
-        if not isinstance(value, dict):
-            return value
-        given = value.get("openai")
-        if isinstance(given, dict) and "type" not in given:
-            value = {**value, "openai": {**_LOCAL_OPENAI.model_dump(exclude_unset=True), **given}}
-        return {"openai": _LOCAL_OPENAI, **value}
 
 
 class SearchConfig(BaseModel):
