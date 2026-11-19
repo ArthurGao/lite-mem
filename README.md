@@ -8,12 +8,16 @@ right memories again with hybrid vector + BM25 search weighted by importance and
 - Library and optional HTTP service over one `MemoryEngine`.
 - PostgreSQL + pgvector, or one SQLite file; local models through Ollama by default (no paid API
   needed).
-- Switchable LLM per role (Ollama, any OpenAI-compatible endpoint, Anthropic); no silent fallbacks.
+- Switchable LLM per role through [lite-model](https://github.com/ArthurGao/lite-model) (Ollama, any
+  OpenAI-compatible endpoint, Anthropic, llm-gateway, LiteLLM Proxy); no silent fallbacks, and every change
+  records the model that answered.
 - Built-in evaluation, including a side-by-side comparison with mem0.
 - A memory engine for [llm-steward](https://github.com/ArthurGao/llm-steward); sister of
   [lite-rag](https://github.com/ArthurGao/lite-rag).
 
-Status: stages S0–S10 done (S9: llm-steward's `LiteMemProvider`; S10: two-hop search without a graph). The design is in [docs/lite-mem-design.md](docs/lite-mem-design.md);
+Status: stages S0–S12 done (S9: llm-steward's `LiteMemProvider`; S10: two-hop search without a graph; S11: evals on
+[lite-eval](https://github.com/ArthurGao/lite-eval); S12: every LLM call through lite-model). The design is in
+[docs/lite-mem-design.md](docs/lite-mem-design.md);
 stages, acceptance and what each stage's review found are in its §12.
 
 ## Quick start

@@ -24,7 +24,7 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
-**S12 done 2026-11-18: every LLM call goes through lite-model** (0.2.0 since 2026-11-19: `host_backends` keeps the local `openai`) (design §3, §12 S12 record; `src/lite_mem/llm.py` is the adapter, `tests/unit/test_llm_requests.py` pins the request bodies).
+**S12 done 2026-11-18: every LLM call goes through lite-model** (0.2.1 since 2026-11-19: `host_backends` keeps the local `openai`; a keyed `openai` needs only `api_key_env`) (design §3, §12 S12 record; `src/lite_mem/llm.py` is the adapter, `tests/unit/test_llm_requests.py` pins the request bodies).
 
 **S11 (2026-11-14): the two-hop eval and LongMemEval run on lite-eval** (design §8, §12; `src/lite_mem/eval_target.py`, `eval/lite-eval/`). Benchmark files are downloaded into a temp dir per run and deleted after it; never kept or committed.
 

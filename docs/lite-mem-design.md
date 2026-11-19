@@ -32,7 +32,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 - **每个环节都可插拔**：`Extractor`、`Resolver`、`Embedder`、`Store`、`LLM` 都是 Protocol，换实现只需要改配置。
 - **记忆有历史**：每一条记忆的每一次变化（新增、更新、删除、合并）都追加进历史表，记下原因、由哪个模型做出、时间。支持"某个时间点时这个人的记忆是什么"（`as_of`）。
 - **可度量**：自带评测，覆盖抽取、更新是否正确、检索召回、问答正确率。同一组数据在不同配置下、以及和 mem0 之间并排比较。
-- **LLM 可切换**：`ollama`、`openai`（任何 OpenAI 兼容端点，包括 llm-gateway）、`anthropic`，只改配置；没有 fallback 链。
+- **LLM 可切换**：S12 起经 lite-model：`ollama`、`openai`（任何 OpenAI 兼容端点）、`anthropic`、`gateway`（llm-gateway）、`litellm`，只改配置；没有 fallback 链。
 
 ### 非目标（v1）
 
@@ -255,7 +255,8 @@ lite-mem/
   src/lite_mem/
     config.py types.py engine.py factory.py  # MemoryEngine：库和服务的唯一核心；factory 按配置组装
     extract.py resolve.py consolidate.py     # 流水线各步（Protocol + LLM 实现）
-    embedding.py keyword.py fusion.py llm.py # 与 lite-rag 同样的写法，各自独立，不互相依赖
+    embedding.py keyword.py fusion.py        # 与 lite-rag 同样的写法，各自独立，不互相依赖
+    llm.py                                   # LLM Protocol 和 lite-model 的 adapter（S12）
     sensitive.py errors.py ids.py db.py      # 敏感信息、错误与脱敏、UUIDv7、PG 迁移
     stores/ base.py pg.py sqlite.py          # Store Protocol + 两个后端
     migrations/                              # litemem migrate（PG）
