@@ -89,6 +89,9 @@ def test_schema_must_be_an_identifier() -> None:
         ("db_password=secret in config", "secret", "in config"),
         ("postgresql://h/db?db_password=secret&x=1", "secret", "x=1"),
         ("connection to postgresql://u:secret@h/db failed: timeout", "secret", "timeout"),
+        ("upstream said api_key=sk-secret is invalid", "sk-secret", "is invalid"),
+        ("request had token: secret attached", "secret", "attached"),
+        ("sent Authorization: Bearer lm_ab_secret today", "lm_ab_secret", "today"),
     ],
 )
 def test_redact_hides_passwords(text: str, secret: str, kept: str) -> None:

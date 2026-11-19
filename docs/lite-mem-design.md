@@ -431,6 +431,13 @@ lite-mem/
     核实后不成立：旧变量"被悄悄忽略"（实际启动时被拒绝，补了测试固定它）；fixture 里 resolve 的 reasoning 是 none（实际是
     high）；Anthropic 重试次数变了（两个 SDK 默认都是 2）。不采纳：显式配置的 `openai` 会改掉所有 role 的端点（这是配置本来的
     意思，和以前的 `__BASE_URL` 一样）。
+- **跨仓库体检后的修补（2026-11-20）**：整个 lite-ai 跑过一遍后对齐 lite-rag 的做法。(1) embedding 调用加重试：429、5xx 和
+  传输错误在同一个模型上重试，退避从 0.5 秒起翻倍、最多 8 秒，次数 `LITEMEM_EMBEDDING__MAX_RETRIES`（默认 4，和 lite-rag 一样）；
+  以前 Ollama 回一次 503 整次写入就失败。错误信息经过 `redact`。(2) `sensitive` 认出 lite-rag 的 `lrk_` 和 lite-mem 自己的
+  `lm_` 密钥（和 `stw_` 一样，密钥部分至少 16 个字符，可以含 `-` `_`，因为 `token_urlsafe` 会生成这两个字符）。
+  Codex 审查 lite-rag 时提出、这边同样成立的三条也一起改了（先写失败的测试）：`redact` 遮住 `Authorization: Bearer …`、
+  `api_key=`、`token:`、`secret=`；无 key 模式也拒绝 `Via`、`X-Forwarded-Host/-Proto/-Port/-Prefix`；`sensitive` 认出
+  GitHub 细粒度 token `github_pat_`。
 
 ## 13. 待确认
 

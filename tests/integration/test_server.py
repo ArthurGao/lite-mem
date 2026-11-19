@@ -235,6 +235,17 @@ def test_without_keys_only_direct_loopback_clients_are_served(components: Compon
 
 
 @pytest.mark.parametrize(
+    "header",
+    [{"X-Forwarded-Host": "evil.example"}, {"X-Forwarded-Proto": "https"}, {"Via": "1.1 proxy"}],
+)
+def test_without_keys_any_proxy_header_is_refused(
+    components: Components, header: dict[str, str]
+) -> None:
+    local = _client(components, keys=False, client=("127.0.0.1", 50000), base_url=LOCAL)
+    assert _is_problem(local.get("/v1/memories", params={"user_id": "ada"}, headers=header), 403)
+
+
+@pytest.mark.parametrize(
     "headers",
     [
         {"Host": "attacker.example:8710"},  # DNS rebinding: a web page's name now points here

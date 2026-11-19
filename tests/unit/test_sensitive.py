@@ -24,7 +24,10 @@ from lite_mem.sensitive import find, mask
         ("key sk-proj-Ab3dEf6hIj9kLm2nOp5q", "api_key"),
         ("AKIAIOSFODNN7EXAMPLE was leaked", "api_key"),
         ("ghp_abcdefghijklmnopqrstuvwxyz0123456789", "api_key"),
+        ("github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz0123", "api_key"),
         ("-----BEGIN RSA PRIVATE KEY-----", "api_key"),
+        ("lite-rag key lrk_ab12cd34_Zx9Yw8Vu7Ts6Rq5Po4Nm", "api_key"),
+        ("lite-mem key lm_ab12cd34_Zx9-Yw8Vu7_Ts6Rq5Po4Nm", "api_key"),  # "-", "_" in the secret
     ],
 )
 def test_secrets_are_found(text: str, kind: str) -> None:
@@ -67,3 +70,12 @@ def test_mask_hides_only_the_secret_value() -> None:
     assert mask("我的 PIN 是 4829 1038，别忘了") == "我的 PIN 是 [redacted]，别忘了"
     # overlapping matches: the union is hidden, no tail of the longer one stays visible
     assert mask("PIN: 4111-1111-1111-1111x9876 ok") == "PIN: [redacted] ok"
+
+
+def test_every_generated_lite_mem_key_is_found() -> None:
+    # Real keys hold "-" and "_" in their secret (token_urlsafe), so a narrower class misses some.
+    from lite_mem.server.auth import new_key
+
+    for _ in range(300):
+        token = new_key("ab12cd34", ["app"])[0]
+        assert [f.kind for f in find(f"my key is {token}")] == ["api_key"], token

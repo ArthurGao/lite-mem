@@ -22,8 +22,9 @@ _API_KEY = re.compile(
     r"sk-[A-Za-z0-9_-]{16,}"
     r"|AKIA[0-9A-Z]{16}"
     r"|gh[pousr]_[A-Za-z0-9]{36,}"
+    r"|github_pat_[A-Za-z0-9_]{22,}"
     r"|xox[abprs]-[A-Za-z0-9-]{10,}"
-    r"|stw_[A-Za-z0-9]+_[A-Za-z0-9]+"
+    r"|(?:stw|lrk|lm)_[A-Za-z0-9]+_[A-Za-z0-9_-]{16,}"  # llm-steward / lite-rag / lite-mem keys
     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
 )
 _NATIONAL_ID = re.compile(r"(?<![0-9Xx])\d{17}[0-9Xx](?![0-9Xx])")

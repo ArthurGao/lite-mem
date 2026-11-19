@@ -1,13 +1,23 @@
-"""Embedders (design §3): one model per namespace. No fallback: a failed call raises ModelError."""
+"""Embedders (design §3): one model per namespace. No fallback: a failed call raises ModelError
+after bounded retries of the *same* model (429, 5xx, transport errors), with exponential backoff."""
 
+import time
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import httpx2
 
 from lite_mem.config import OLLAMA_URL, EmbeddingConfig
-from lite_mem.errors import ConfigError, ModelError
+from lite_mem.errors import ConfigError, ModelError, redact
 
 BATCH = 64
+MAX_BACKOFF_S = 8.0
+
+
+def _retryable(exc: Exception) -> bool:
+    if isinstance(exc, httpx2.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
+    return isinstance(exc, httpx2.TransportError)
 
 
 class Embedder(Protocol):
@@ -27,10 +37,16 @@ class _HTTPEmbedder:
     provider: str
     default_url: str
 
-    def __init__(self, config: EmbeddingConfig, client: httpx2.Client | None = None) -> None:
+    def __init__(
+        self,
+        config: EmbeddingConfig,
+        client: httpx2.Client | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._config = config
         self._base_url = (config.base_url or self.default_url).rstrip("/")
         self._client = client or httpx2.Client(timeout=config.timeout_s)
+        self._sleep = sleep
         self._dim: int | None = config.dim
 
     @property
@@ -47,16 +63,27 @@ class _HTTPEmbedder:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), BATCH):
             batch = texts[start : start + BATCH]
-            try:
-                got = self._call(batch)
-            except (httpx2.HTTPError, KeyError, TypeError, ValueError) as exc:
-                raise ModelError(f"embedding ({self.provider} {self.model}) failed: {exc}") from exc
+            got = self._with_retry(batch)
             if len(got) != len(batch):
                 raise ModelError(f"{self.model}: asked for {len(batch)} vectors, got {len(got)}")
             vectors.extend(got)
         if vectors and self._dim is not None and len(vectors[0]) != self._dim:
             raise ModelError(f"{self.model}: expected {self._dim}-d vectors, got {len(vectors[0])}")
         return vectors
+
+    def _with_retry(self, batch: list[str]) -> list[list[float]]:
+        attempts = self._config.max_retries + 1
+        for attempt in range(attempts):
+            try:
+                return self._call(batch)
+            except (httpx2.HTTPError, KeyError, TypeError, ValueError) as exc:
+                if not _retryable(exc) or attempt == attempts - 1:
+                    raise ModelError(
+                        f"embedding ({self.provider} {self.model}) failed after {attempt + 1} "
+                        f"attempt(s): {type(exc).__name__}: {redact(str(exc))}"
+                    ) from exc
+                self._sleep(min(0.5 * 2**attempt, MAX_BACKOFF_S))
+        raise AssertionError("unreachable")
 
     def _post(self, path: str, body: dict[str, Any], headers: dict[str, str]) -> Any:
         response = self._client.post(f"{self._base_url}{path}", json=body, headers=headers)
@@ -85,10 +112,15 @@ class OpenAIEmbedder(_HTTPEmbedder):
     provider = "openai"
     default_url = "https://api.openai.com/v1"
 
-    def __init__(self, config: EmbeddingConfig, client: httpx2.Client | None = None) -> None:
+    def __init__(
+        self,
+        config: EmbeddingConfig,
+        client: httpx2.Client | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         if config.api_key is None and config.base_url is None:
             raise ConfigError("embedding provider openai needs LITEMEM_EMBEDDING__API_KEY")
-        super().__init__(config, client)
+        super().__init__(config, client, sleep)
 
     def _call(self, batch: list[str]) -> list[list[float]]:
         key = self._config.api_key

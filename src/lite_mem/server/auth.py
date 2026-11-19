@@ -43,7 +43,16 @@ def allows(key: ApiKey, namespace: str) -> bool:
     return any(fnmatchcase(namespace, pattern) for pattern in key.namespaces)
 
 
-_PROXY_HEADERS = ("forwarded", "x-forwarded-for", "x-real-ip")
+_PROXY_HEADERS = (
+    "forwarded",
+    "via",
+    "x-real-ip",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-forwarded-prefix",
+)
 
 
 def local_request(client: str | None, headers: Mapping[str, str]) -> bool:
