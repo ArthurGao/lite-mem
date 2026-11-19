@@ -51,6 +51,8 @@ class EmbeddingConfig(BaseModel):
     base_url: str | None = None
     api_key: SecretStr | None = None
     timeout_s: float = Field(default=60.0, gt=0)
+    # Retries of the same model on 429 / 5xx / transport errors (backoff 0.5 s, doubling, max 8 s).
+    max_retries: int = Field(default=4, ge=0)
     # The model's vector size, when known: skips the one probe call that learns it.
     dim: int | None = Field(default=None, gt=0)
 

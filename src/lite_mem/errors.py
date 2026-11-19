@@ -17,6 +17,14 @@ _CREDENTIALS = (
     (re.compile(r"(://)[^\s/@]+@"), r"\1***@"),
     (re.compile(r"([?&]\w*password=)[^\s&]+", re.IGNORECASE), r"\1***"),
     (re.compile(r"((?<![?&\w])\w*password\s*=\s*)('[^']*'|\S+)", re.IGNORECASE), r"\1***"),
+    # An HTTP credential, and an API key or token written as key=value / key: value.
+    (re.compile(r"(\bbearer\s+)\S+", re.IGNORECASE), r"\1***"),
+    (
+        re.compile(
+            r"(\b(?:api[_-]?key|(?:access|auth)?[_-]?token|secret)\s*[:=]\s*)\S+", re.IGNORECASE
+        ),
+        r"\1***",
+    ),
 )
 
 

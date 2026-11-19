@@ -60,7 +60,9 @@ def test_openai_embedder_sends_its_key_and_orders_by_index() -> None:
 
 
 def test_a_failed_or_short_embedding_call_raises() -> None:
-    down = OllamaEmbedder(EmbeddingConfig(), _client(lambda r: httpx2.Response(500)))
+    down = OllamaEmbedder(
+        EmbeddingConfig(), _client(lambda r: httpx2.Response(500)), sleep=lambda _: None
+    )
     with pytest.raises(ModelError, match="failed"):
         down.embed(["x"])
     short = OllamaEmbedder(
@@ -73,3 +75,55 @@ def test_a_failed_or_short_embedding_call_raises() -> None:
 def test_openai_without_a_key_or_endpoint_is_a_config_error() -> None:
     with pytest.raises(ConfigError, match="API_KEY"):
         build_embedder(EmbeddingConfig(provider="openai", model="m"))
+
+
+def _flaky(statuses: list[int]) -> tuple[list[httpx2.Request], object]:
+    """A handler answering each status in turn, then 200 with one vector per input."""
+    calls: list[httpx2.Request] = []
+    pending = iter(statuses)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request)
+        status = next(pending, 200)
+        if status != 200:
+            return httpx2.Response(status)
+        body = json.loads(request.content)
+        return httpx2.Response(200, json={"embeddings": [[1.0, 0.0]] * len(body["input"])})
+
+    return calls, handler
+
+
+def test_a_busy_or_failing_server_is_retried_with_backoff() -> None:
+    calls, handler = _flaky([503, 429, 500])
+    slept: list[float] = []
+    e = OllamaEmbedder(EmbeddingConfig(), _client(handler), sleep=slept.append)
+    assert e.embed(["x"]) == [[1.0, 0.0]]
+    assert len(calls) == 4 and slept == [0.5, 1.0, 2.0]
+
+
+def test_a_client_error_is_not_retried() -> None:
+    calls, handler = _flaky([400])
+    slept: list[float] = []
+    e = OllamaEmbedder(EmbeddingConfig(), _client(handler), sleep=slept.append)
+    with pytest.raises(ModelError, match="after 1 attempt"):
+        e.embed(["x"])
+    assert len(calls) == 1 and slept == []
+
+
+def test_retries_are_bounded_by_max_retries() -> None:
+    calls, handler = _flaky([503] * 10)
+    slept: list[float] = []
+    e = OllamaEmbedder(EmbeddingConfig(max_retries=2), _client(handler), sleep=slept.append)
+    with pytest.raises(ModelError, match="after 3 attempt"):
+        e.embed(["x"])
+    assert len(calls) == 3 and slept == [0.5, 1.0]
+
+
+def test_a_failed_call_does_not_leak_credentials_in_its_message() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("cannot reach http://user:hunter2@10.0.0.5:11434/api/embed")
+
+    config = EmbeddingConfig(max_retries=0)
+    with pytest.raises(ModelError) as caught:
+        OllamaEmbedder(config, _client(handler), sleep=lambda _: None).embed(["x"])
+    assert "hunter2" not in str(caught.value) and "***@" in str(caught.value)
