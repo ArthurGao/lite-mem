@@ -102,3 +102,11 @@ class MemoryHit:
     score: float  # relevance x weight
     relevance: float  # fused (RRF) relevance, before the weights
     via: uuid.UUID | None = None  # found by a follow-up search through this hit (S10)
+
+
+@dataclass(frozen=True)
+class MemoryContext:
+    """Memories ready for a prompt (S13): `text` to put in it, `hits` what it holds, in order."""
+
+    text: str
+    hits: list[MemoryHit]

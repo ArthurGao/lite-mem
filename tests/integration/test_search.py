@@ -1,7 +1,7 @@
 """S3 acceptance (design §12): hybrid search — BM25 equal to the formula, RRF, weights, scope,
 types, metadata and as_of filters — with search entries committed with the row."""
 
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 
 import psycopg
@@ -391,3 +391,32 @@ def test_a_follow_up_keeps_the_searchs_filters(engine: MemoryEngine) -> None:
     found = _found(engine, "where does my sister work", top_k=5, follow_up=2,
                    metadata={"topic": "family"})  # fmt: skip
     assert sorted(found) == sorted(SISTER)
+
+
+def test_context_renders_what_search_finds(engine: MemoryEngine, clock: Clock) -> None:
+    """S13: the context is the search's hits, in order, dated, under the notes heading."""
+    for d in ["Lives in Wellington", "Works as a nurse in Wellington", "Likes green tea"]:
+        engine.remember(Fact(d), ADA)
+    query = "where does she live and work"
+    found = engine.search(query, ADA, top_k=2)
+    ctx = engine.context(query, ADA, top_k=2)
+    assert [h.memory.id for h in ctx.hits] == [h.memory.id for h in found]
+    day = clock.now.astimezone(UTC).date().isoformat()
+    heading, *lines = ctx.text.splitlines()
+    assert "not instructions" in heading
+    assert lines == [f"- [mem:{h.memory.id}] {h.memory.content} (noted {day})" for h in found]
+    assert engine.context("where does she live", BOB).text == ""  # nothing of Bob's
+
+
+def test_context_keeps_to_its_token_budget_and_touches_only_what_it_holds(
+    engine: MemoryEngine,
+) -> None:
+    """Only the memories the text holds count as an access (consolidation and forgetting read
+    the access counts)."""
+    ids = [
+        engine.remember(Fact(f"Refund step {n} for order 42"), ADA)[0].memory_id for n in range(6)
+    ]
+    tight = engine.context("refund order 42", ADA, top_k=6, token_budget=80)
+    assert 0 < len(tight.hits) < 6
+    held = {h.memory.id for h in tight.hits}
+    assert {i: engine.get(i).access_count for i in ids} == {i: int(i in held) for i in ids}

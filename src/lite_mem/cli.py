@@ -102,6 +102,26 @@ def search_command(
                 "via": h.via} for h in hits])  # fmt: skip
 
 
+@app.command("context")
+def context_command(
+    query: str,
+    user: User = None,
+    agent: Agent = None,
+    top_k: int = 10,
+    budget: Annotated[int | None, typer.Option(help="token budget for the text")] = None,
+    language: Annotated[str, typer.Option(help="auto (the query's), en or zh")] = "auto",
+    follow_up: int = 0,
+) -> None:
+    """The memories that answer QUERY as text for a prompt: dated, one line each, under a heading
+    that says they are notes and not instructions."""
+    with _engine() as engine:
+        found = engine.context(
+            query, Scope(user, agent), top_k=top_k, token_budget=budget, language=language,
+            follow_up=follow_up,
+        )  # fmt: skip
+        typer.echo(found.text)
+
+
 @app.command("list")
 def list_command(user: User = None, agent: Agent = None) -> None:
     """The scope's current memories."""

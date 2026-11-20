@@ -16,6 +16,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from lite_mem.config import MaintainConfig, Namespace, SearchConfig
 from lite_mem.consolidate import Consolidator
+from lite_mem.context import fit, language_of, render
 from lite_mem.embedding import Embedder
 from lite_mem.errors import ConfigError, Conflict, InvalidRequest, NotFound, redact
 from lite_mem.extract import Extractor
@@ -31,6 +32,7 @@ from lite_mem.types import (
     Fact,
     HistoryEntry,
     Memory,
+    MemoryContext,
     MemoryEvent,
     MemoryHit,
     MemoryType,
@@ -421,6 +423,35 @@ class MemoryEngine:
         with self._store.transaction() as tx:
             return tx.list_memories(self._ns, filters, limit=limit, offset=offset)
 
+    def context(
+        self,
+        query: str,
+        scope: Scope,
+        *,
+        top_k: int = 10,
+        token_budget: int | None = None,
+        language: str = "auto",
+        include_shared: bool = True,
+        types: Sequence[MemoryType] | None = None,
+        metadata: dict[str, Any] | None = None,
+        as_of: datetime | None = None,
+        follow_up: int = 0,
+    ) -> MemoryContext:
+        """The memories that answer `query`, ready for a prompt (design §5, S13): `search`'s hits
+        rendered one dated line each under a heading that says they are notes and not
+        instructions, in the query's language unless `language` says, within `token_budget`
+        tokens when given (only what the text holds counts as an access). No model call."""
+        if token_budget is not None and token_budget < 0:
+            raise InvalidRequest("token_budget must be 0 or more")
+        said = language_of(query, language)
+        budget = token_budget
+        hits = self._found(
+            query, scope, top_k=top_k, include_shared=include_shared, types=types,
+            metadata=metadata, as_of=as_of, follow_up=follow_up,
+            keep=None if budget is None else lambda found: fit(found, budget, said),
+        )  # fmt: skip
+        return MemoryContext(render(hits, said), hits)
+
     def search(
         self,
         query: str,
@@ -442,6 +473,26 @@ class MemoryEngine:
         their best new hits (`via` = the hit they came from) follow the first round's top half
         (rounded up).
         Scores from the two rounds are not comparable; the order is the ranking."""
+        return self._found(
+            query, scope, top_k=top_k, include_shared=include_shared, types=types,
+            metadata=metadata, as_of=as_of, follow_up=follow_up, keep=None,
+        )  # fmt: skip
+
+    def _found(
+        self,
+        query: str,
+        scope: Scope,
+        *,
+        top_k: int,
+        include_shared: bool,
+        types: Sequence[MemoryType] | None,
+        metadata: dict[str, Any] | None,
+        as_of: datetime | None,
+        follow_up: int,
+        keep: Callable[[list[MemoryHit]], list[MemoryHit]] | None,
+    ) -> list[MemoryHit]:
+        """`search`'s hits, cut by `keep` (context's budget) inside the snapshot, before the
+        access is recorded: only what the caller gets counts as an access."""
         if not query.strip():
             raise InvalidRequest("search needs a query")
         if not 1 <= top_k <= MAX_TOP_K:
@@ -453,13 +504,14 @@ class MemoryEngine:
         with self._store.transaction() as tx:
             hits = self._rank(tx, query, vector, filters, top_k)
             if not follow_up:
-                return self._touched(tx, hits)
+                return self._touched(tx, keep(hits) if keep else hits)
         probes = self._probes(query, hits[:follow_up])  # between the rounds: a model call
         with self._store.transaction() as tx:
             # ranked again, so everything returned holds in this one snapshot (what changed
             # during the model call is not returned)
             first = self._rank(tx, query, vector, filters, top_k)
-            return self._touched(tx, self._followed(tx, first, follow_up, probes, filters, top_k))
+            followed = self._followed(tx, first, follow_up, probes, filters, top_k)
+            return self._touched(tx, keep(followed) if keep else followed)
 
     def _touched(self, tx: Tx, hits: list[MemoryHit]) -> list[MemoryHit]:
         """A caller's retrieval counts as an access of every hit it returns."""

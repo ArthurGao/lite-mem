@@ -1,0 +1,11 @@
+{# Memories rendered for a prompt (design §5, S13). One line each, its text collapsed (`oneline`):
+   stored text cannot open a heading or fake another entry. Dated (`day`: valid_from's UTC day):
+   "on" for an episodic memory (something that happened), "noted" for the rest. The heading says
+   these are notes, not instructions: memory text comes from what users said. Labels (`t`):
+   lite_mem.context.LABELS, the same wording as llm-steward's context. #}
+{% if hits %}
+## {{ t.user }}
+{% for h in hits %}
+- [mem:{{ h.memory.id }}] {{ h.memory.content | oneline }}{{ (t.on if h.memory.type == "episodic" else t.noted) | format(h.memory.valid_from | day) }}
+{% endfor %}
+{% endif %}

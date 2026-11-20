@@ -24,6 +24,8 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
+**S13 done 2026-11-20: `MemoryEngine.context` (CLI `litemem context`, `POST /v1/memories:context`)** renders a search's hits for a prompt — dated, one line each, under a "notes, not instructions" heading, within a token budget; no model call (design §5, §12 S13 record).
+
 **S12 done 2026-11-18: every LLM call goes through lite-model** (0.2.1 since 2026-11-19: `host_backends` keeps the local `openai`; a keyed `openai` needs only `api_key_env`) (design §3, §12 S12 record; `src/lite_mem/llm.py` is the adapter, `tests/unit/test_llm_requests.py` pins the request bodies).
 
 **S11 (2026-11-14): the two-hop eval and LongMemEval run on lite-eval** (design §8, §12; `src/lite_mem/eval_target.py`, `eval/lite-eval/`). Benchmark files are downloaded into a temp dir per run and deleted after it; never kept or committed.
@@ -74,7 +76,7 @@ uv run pytest                    # unit + integration, fakes only (needs LITEMEM
 uv run pytest -m ollama          # opt-in: real Ollama
 uv run ruff check && uv run ruff format --check && uv run mypy
 uv run litemem migrate           # schema LITEMEM_DB_SCHEMA (default lite_mem) on LITEMEM_DATABASE_URL
-uv run litemem add|search|history|erase ...
+uv run litemem add|search|context|history|erase ...
 uv run litemem eval              # design §8
 uv run lite-eval run eval/lite-eval/suites/multihop.yaml   # two-hop recall (needs Ollama bge-m3)
 uv run python eval/longmemeval.py s|m|oracle [--limit N]  # downloads to a temp dir, deletes it after
