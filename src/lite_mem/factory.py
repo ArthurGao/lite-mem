@@ -114,7 +114,7 @@ def open_components(
     return Components(
         store or open_store(settings, max_size=max_size),
         build_embedder(settings.embedding),
-        LlmExtractor(llm, pipe.extract_prompt),
+        LlmExtractor(llm, pipe.extract_prompt, pipe.left_out_prompt),
         resolver,
         related=pipe.related,
         search=settings.search,

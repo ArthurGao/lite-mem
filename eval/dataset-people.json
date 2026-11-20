@@ -1,0 +1,84 @@
+{
+  "about": "Synthetic conversations for the cases eval/dataset.json does not cover, found on 2026-11-20 with qwen3:8b: a fact said together with someone else (\"my wife Anna and I have a dog\": the person and the place were dropped), a fact about someone else that later changes, and a single-statement fact that changes (the old one must not come back as a remainder). Scored like dataset.json (design §8). A stale check with no `unless` catches an invented fact: the extract prompt's own example values (Shanghai) and earlier draft examples (Nelson) must never become memories.",
+  "users": [
+    {
+      "user_id": "james",
+      "sessions": [
+        {
+          "messages": [{"role": "user", "content": "My wife Anna and I have a dog named Max, and we both love jazz."}],
+          "present": [["Anna"], ["Max"], ["jazz"]],
+          "stale": []
+        },
+        {
+          "messages": [{"role": "user", "content": "I work part-time at a cafe as a barista."}],
+          "present": [["barista"]],
+          "stale": []
+        },
+        {
+          "messages": [{"role": "user", "content": "I quit the cafe last week, I'm a full-time photographer now."}],
+          "present": [["photographer"]],
+          "stale": [
+            {"old": ["barista"], "unless": ["quit", "left", "former", "used to", "previously", "no longer", "was a barista", "worked as a barista"]},
+            {"old": ["Shanghai", "上海", "Nelson"], "unless": []}
+          ]
+        }
+      ],
+      "questions": [
+        {"q": "What is his wife's name?", "answers": ["Anna"]},
+        {"q": "What is his dog called?", "answers": ["Max"]},
+        {"q": "What does he do for work now?", "answers": ["photographer"]}
+      ]
+    },
+    {
+      "user_id": "chen",
+      "sessions": [
+        {
+          "messages": [{"role": "user", "content": "我和老公小李住在杭州，我们有个女儿叫朵朵。"}],
+          "present": [["小李"], ["杭州", "Hangzhou"], ["朵朵"]],
+          "stale": []
+        },
+        {
+          "messages": [{"role": "user", "content": "我在一家书店上班，周末还在社区教书法。"}],
+          "present": [["书店", "bookstore"], ["书法", "calligraphy"]],
+          "stale": []
+        },
+        {
+          "messages": [{"role": "user", "content": "我从书店辞职了，现在在一家咖啡馆做店长。"}],
+          "present": [["店长", "咖啡馆", "cafe", "café"], ["书法", "calligraphy"]],
+          "stale": [
+            {"old": ["书店", "bookstore"], "unless": ["辞职", "以前", "之前", "不再", "离开", "原来", "曾经", "quit", "former", "used to", "previously", "no longer", "left"]},
+            {"old": ["上海", "Shanghai", "Nelson"], "unless": []}
+          ]
+        }
+      ],
+      "questions": [
+        {"q": "她住在哪个城市？", "answers": ["杭州", "Hangzhou"]},
+        {"q": "她女儿叫什么名字？", "answers": ["朵朵"]},
+        {"q": "她现在做什么工作？", "answers": ["店长", "咖啡馆"]}
+      ]
+    },
+    {
+      "user_id": "riley",
+      "sessions": [
+        {
+          "messages": [{"role": "user", "content": "My partner Sam and I are both vegetarian, and my sister Lucy is a doctor in London."}],
+          "present": [["Sam"], ["vegetarian"], ["Lucy"], ["doctor"]],
+          "stale": []
+        },
+        {
+          "messages": [{"role": "user", "content": "Lucy moved to Paris last month for a new hospital job."}],
+          "present": [["Paris"]],
+          "stale": [
+            {"old": ["London"], "unless": ["moved", "from London", "left", "used to", "previously", "formerly", "former ", "no longer"]},
+            {"old": ["Shanghai", "上海", "Nelson"], "unless": []}
+          ]
+        }
+      ],
+      "questions": [
+        {"q": "What is Riley's partner called?", "answers": ["Sam"]},
+        {"q": "Where does Riley's sister live?", "answers": ["Paris"]},
+        {"q": "What does Lucy do?", "answers": ["doctor"]}
+      ]
+    }
+  ]
+}
