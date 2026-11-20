@@ -159,3 +159,16 @@ def test_variants_override_the_settings_and_get_their_own_namespace() -> None:
     assert (s.namespace, s.db_schema) == ("eval/add-only", "lite_mem_eval")
     assert (s.pipeline.resolver, s.llm.reasoning_effort) == ("add_only", "none")
     assert ev.variant_settings(base, "thinking", "lite_mem_eval").llm.reasoning_effort is None
+
+
+def test_the_people_set_scores_what_it_was_written_for() -> None:
+    """eval/dataset-people.json: a dropped person or place is a miss, an invented example value is
+    stale, a quit job is stale unless put in the past."""
+    data = ev.load(ROOT / "eval" / "dataset-people.json")
+    checks = [s for u in data.users for x in u.sessions for s in x.stale]
+    invented = next(s for s in checks if s.old == ["Shanghai", "上海", "Nelson"])
+    assert ev.stale(["Lives in Nelson"], invented)
+    assert not ev.stale(["Lives in Hangzhou"], invented)
+    barista = next(s for s in checks if s.old == ["barista"])
+    assert ev.stale(["Works part-time as a barista"], barista)
+    assert not ev.stale(["Quit the barista job at the cafe"], barista)

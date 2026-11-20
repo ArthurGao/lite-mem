@@ -29,6 +29,13 @@ def terms(text: str) -> list[str]:
     return [t.strip().lower() for t in jieba.cut_for_search(text) if _WORDLIKE.search(t)]
 
 
+def places(text: str) -> list[str]:
+    """The places jieba tags `ns` in `text` (two characters or more), in order."""
+    import jieba.posseg  # here, not at the top: ~190 ms to import, needed for Chinese text only
+
+    return [w for w, flag in jieba.posseg.cut(text) if flag == "ns" and len(w) > 1]
+
+
 def term_counts(text: str) -> Counter[str]:
     return Counter(terms(text))
 

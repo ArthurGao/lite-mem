@@ -8,6 +8,7 @@ from lite_mem.types import Memory
 
 # The default template of each step (config and the step classes both use these).
 EXTRACT = "extract_facts.j2"
+EXTRACT_LEFT_OUT = "extract_left_out.j2"  # appended when an answer missed a name (extract.py)
 RESOLVE = "resolve_conflict.j2"
 MERGE = "consolidate_merge.j2"
 SUMMARISE = "consolidate_summarise.j2"

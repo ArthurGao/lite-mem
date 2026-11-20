@@ -267,6 +267,7 @@ _NO_THINKING = {"llm": {"reasoning_effort": "none"}}
 _TERSE = {**_NO_THINKING, "pipeline": {"extract_prompt": "extract_facts_terse.j2"}}
 VARIANTS: dict[str, Variant] = {
     "resolve": Variant(_NO_THINKING),
+    "no_recheck": Variant({**_NO_THINKING, "pipeline": {"left_out_prompt": None}}),
     "add_only": Variant({**_NO_THINKING, "pipeline": {"resolver": "add_only"}}),
     "terse_prompt": Variant(_TERSE),
     "thinking": Variant({}),

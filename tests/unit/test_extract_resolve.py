@@ -173,3 +173,85 @@ def test_only_a_compound_fact_can_leave_a_remainder(fact: str, compound: bool) -
     from lite_mem.engine import _compound
 
     assert _compound(fact) is compound
+
+
+@pytest.mark.parametrize(
+    ("said", "names"),
+    [
+        ("My wife Anna and I have a dog named Max.", ["Anna", "Max"]),
+        ("Hi, I'm Emma. I live in Auckland and work as a nurse.", ["Emma", "Auckland"]),
+        ("Lucy moved to Paris last month.", ["Paris"]),  # a sentence's first word is not judged
+        ("Actually I quit the bank, I'm a freelance ML consultant now.", []),
+        ("我和老公小李住在杭州，我们有个女儿叫朵朵。", ["杭州", "朵朵"]),
+        ("你好，我叫小王，住在北京。", ["北京", "小王"]),
+        (
+            "We visited my aunt Élodie in Lyon; I've met her McDonald cousins.",
+            ["Élodie", "Lyon", "McDonald"],
+        ),
+        ("Sadly I'M NOT SURE, said ANNA.", []),
+        ("我最近喜欢上了绿茶，每天早上都喝一杯。", []),
+    ],
+)
+def test_the_names_and_places_a_message_mentions(said: str, names: list[str]) -> None:
+    from lite_mem.extract import mentioned
+
+    assert mentioned(said) == names
+
+
+def _drops(name: str) -> Any:
+    """An `extract` handler that leaves out the fact naming `name` on the first try only, and lists
+    every other user line as a fact."""
+
+    def answer(payload: dict[str, Any]) -> dict[str, Any]:
+        said = [m["content"] for m in payload["MESSAGES"] if m["role"] == "user"]
+        facts = [f for s in said for f in s.split(" / ")]
+        if "LEFT_OUT" not in payload:
+            facts = [f for f in facts if name not in f]
+        return {"facts": [{"content": f, "type": "semantic", "importance": 0.5} for f in facts]}
+
+    return answer
+
+
+def test_a_name_the_answer_left_out_is_asked_for_once_more() -> None:
+    """qwen3:8b, 2026-11-20: "My wife Anna and I have a dog named Max" kept only the dog (7 of 8
+    runs). Code finds the names and places the person said; one the facts do not mention is
+    asked for once more, and the facts about it join the first answer."""
+    llm = FakeLLM(extract=_drops("Anna"))
+    out = LlmExtractor(llm).extract([Message("user", "Wife is Anna / Has a dog named Max")])
+    assert [f.content for f in out.facts] == ["Has a dog named Max", "Wife is Anna"]
+    assert out.produced_by == "fake:fake-model"
+    first, again = [p for _, p in llm.calls]
+    assert "LEFT_OUT" not in first and again["LEFT_OUT"] == ["Anna"]
+    assert again["MESSAGES"] == first["MESSAGES"]
+    systems = [c.messages[0].content for c in llm.fake.calls]
+    assert systems[1].startswith(systems[0]) and "did not mention" in systems[1]
+
+
+def test_an_answer_that_covers_every_name_is_not_asked_again() -> None:
+    llm = FakeLLM(extract=_drops("nobody"))
+    LlmExtractor(llm).extract([Message("user", "Wife is Anna / Has a dog named Max")])
+    assert len(llm.calls) == 1
+
+
+def test_the_second_answer_only_adds_facts_about_the_names_left_out() -> None:
+    """The first answer is never replaced: a retry that rewords or drops its facts changes
+    nothing but the missing name's facts."""
+
+    def retry(payload: dict[str, Any]) -> dict[str, Any]:
+        if "LEFT_OUT" not in payload:
+            return _drops("Anna")(payload)
+        said = ["Owns a dog called Max", "Wife is Anna", "Loves jazz"]
+        return {"facts": [{"content": c, "type": "semantic", "importance": 0.5} for c in said]}
+
+    llm = FakeLLM(extract=retry)
+    out = LlmExtractor(llm).extract([Message("user", "Wife is Anna / Has a dog named Max")])
+    assert [f.content for f in out.facts] == ["Has a dog named Max", "Wife is Anna"]
+    assert len(llm.calls) == 2  # asked once more, never a third time
+
+
+def test_the_recheck_can_be_turned_off() -> None:
+    llm = FakeLLM(extract=_drops("Anna"))
+    out = LlmExtractor(llm, left_out_prompt=None).extract(
+        [Message("user", "Wife is Anna / Has a dog named Max")]
+    )
+    assert [f.content for f in out.facts] == ["Has a dog named Max"] and len(llm.calls) == 1

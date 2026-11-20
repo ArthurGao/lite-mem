@@ -63,6 +63,9 @@ class PipelineConfig(BaseModel):
     resolver: Literal["llm", "add_only"] = "llm"  # add_only: mem0 2.2.1's behaviour
     related: int = Field(default=5, ge=1, le=20)  # existing memories each fact is compared with
     extract_prompt: str = prompts.EXTRACT  # a file in lite_mem/prompts
+    # Asked once more for a name or place the person said that no extracted fact mentions;
+    # None: never (the eval's `no_recheck`).
+    left_out_prompt: str | None = prompts.EXTRACT_LEFT_OUT
     resolve_prompt: str = prompts.RESOLVE
     # Secrets (passwords, card and ID numbers, API keys; lite_mem.sensitive): drop (default),
     # mask the value, or keep. Applies to every write, not only add(infer=true).
