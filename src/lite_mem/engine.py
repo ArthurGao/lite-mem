@@ -631,13 +631,17 @@ class MemoryEngine:
     ) -> list[_Step]:
         """Resolve the facts one by one (model calls, no transaction). A fact's candidates are its
         related memories plus the facts this batch has already accepted (batch-local ids), so two
-        wordings of one change do not both land. The model proposes; this decides (rule 5): a
+        wordings of one change do not both land; a memory the batch already replaces is left out
+        (its replacement stands for it). The model proposes; this decides (rule 5): a
         target outside the candidates is not applied, and every such downgrade says why."""
         assert self._resolver is not None
         steps: list[_Step] = []
         accepted: dict[uuid.UUID, _Step] = {}  # batch-local id -> the step that adds it
         claimed: dict[uuid.UUID, uuid.UUID] = {}  # stored memory -> batch-local id replacing it
-        for add, near in zip(adds, stored, strict=True):
+        for add, related in zip(adds, stored, strict=True):
+            # a memory this batch replaces is not shown again: shown next to what replaced it,
+            # the model took the two for a conflict and deleted the new one (qwen3:8b)
+            near = [m for m in related if m.id not in claimed]
             pending = [  # facts this batch accepted, remainders too, shown like memories
                 _new_memory(step.op.fact, scope, self._now(), local)
                 for local, step in accepted.items()
@@ -651,8 +655,6 @@ class MemoryEngine:
             allowed = {m.id for m in near} | set(accepted)
             if action in ("UPDATE", "DELETE") and target not in allowed:
                 action, reason = "ADD", f"{action} of {target} is not among the candidates; added"
-            if target in claimed:  # replaced earlier in this batch: aim at what replaced it
-                target = claimed[target]
             if action == "NOOP":
                 continue
             replaces: uuid.UUID | None = None
