@@ -362,6 +362,29 @@ def test_a_memory_whose_batch_replacement_was_deleted_can_be_replaced_again(
     assert sorted(current(engine)) == ["Auckland fell through", "moved to Sydney"]
 
 
+def test_a_memory_the_batch_replaces_is_no_longer_a_candidate(store: Store, clock: Clock) -> None:
+    """qwen3:8b, 2026-11-20 (3 of 3 runs, the eval's xiaowang): "搬到上海了…现在做数据分析师"
+    replaced "住在北京" with "住在上海"; the next fact was shown both cities, called them a
+    conflict and DELETEd "住在上海": Shanghai lost, Beijing kept. A memory this batch replaces is
+    not shown again: later facts see what replaced it."""
+    shown: list[list[str]] = []
+
+    def decide(payload: dict[str, Any]) -> dict[str, Any]:
+        facts = {e["fact"]: e["id"] for e in payload["EXISTING"]}
+        shown.append(sorted(facts))
+        if payload["NEW"] == "lives in Shanghai" and "lives in Beijing" in facts:
+            return {"action": "UPDATE", "target_id": facts["lives in Beijing"], "reason": "moved"}
+        if {"lives in Beijing", "lives in Shanghai"} <= facts.keys():  # what qwen3 did
+            return {"action": "DELETE", "target_id": facts["lives in Shanghai"], "reason": "x"}
+        return {"action": "ADD", "target_id": None, "reason": "new"}
+
+    engine, _ = _engine(store, clock, decide)
+    _say(engine, ADA, "lives in Beijing")
+    _say(engine, ADA, "lives in Shanghai", "works as a data analyst")
+    assert sorted(current(engine)) == ["lives in Shanghai", "works as a data analyst"]
+    assert shown[-1] == ["lives in Shanghai"]
+
+
 def test_a_remainder_already_held_is_not_stored_again(store: Store, clock: Clock) -> None:
     engine, _ = _engine(store, clock, _moves("Wellington", "works as a nurse"))
     _say(engine, ADA, "lives in Wellington and works as a nurse")
