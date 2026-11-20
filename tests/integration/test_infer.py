@@ -277,6 +277,91 @@ def test_a_remainder_must_restate_part_of_the_old_fact(store: Store, clock: Cloc
     assert current(engine) == ["moved to Auckland"]
 
 
+def test_a_fact_that_says_one_thing_has_no_remainder(store: Store, clock: Clock) -> None:
+    """Real qwen3:8b, 2026-11-20: "works part-time at a cafe as a barista", then quitting it, came
+    back with the remainder "works part-time as a barista" (6 of 8 runs even with the prompt
+    saying not to): the changed fact, shortened. Code decides: only a compound fact (joined by
+    "and", a comma, "和" …) has parts that can outlive a change."""
+    engine, _ = _engine(store, clock, _moves("cafe", "works part-time as a barista"))
+    _say(engine, ADA, "works part-time at a cafe as a barista")
+    events = _say(engine, ADA, "moved on from the cafe job")
+    assert [e.op for e in events] == ["SUPERSEDE"]
+    assert current(engine) == ["moved on from the cafe job"]
+
+
+def test_a_remainder_this_batch_already_added_is_not_stored_again(
+    store: Store, clock: Clock
+) -> None:
+    """Real qwen3:8b, 2026-11-20 (2 of 6 runs): "I sold the Corolla, I cycle to work now" was
+    extracted as "Sells Corolla" (added) and a change of commute, whose remainder of "Drives a
+    Toyota Corolla to work" was "Sells Corolla" again: stored twice."""
+    engine, _ = _engine(store, clock, _moves("Corolla", "Sells Corolla"))
+    _say(engine, ADA, "lives in Christchurch and drives a Toyota Corolla to work")
+    events = _say(engine, ADA, "sells Corolla", "moved to cycling to work")
+    assert [e.op for e in events] == ["ADD", "SUPERSEDE"]
+    assert sorted(current(engine)) == ["moved to cycling to work", "sells Corolla"]
+
+
+def test_a_fact_a_remainder_of_this_batch_already_says_is_not_stored_again(
+    store: Store, clock: Clock
+) -> None:
+    engine, _ = _engine(store, clock, _moves("Corolla", "Sells Corolla"))
+    _say(engine, ADA, "lives in Christchurch and drives a Toyota Corolla to work")
+    events = _say(engine, ADA, "moved to cycling to work", "sells Corolla")
+    assert [e.op for e in events] == ["SUPERSEDE", "ADD"]
+    assert sorted(current(engine)) == ["Sells Corolla", "moved to cycling to work"]
+
+
+def test_a_later_fact_of_the_batch_can_change_a_remainder(store: Store, clock: Clock) -> None:
+    """A remainder is one of the batch's facts: "moved to Auckland, quit nursing" said at once
+    leaves neither Wellington nor the nursing job current."""
+
+    def decide(payload: dict[str, Any]) -> dict[str, Any]:
+        def hit(fact: str) -> str | None:
+            return next((e["id"] for e in payload["EXISTING"] if e["fact"] == fact), None)
+
+        compound = "lives in Wellington and works as a nurse"
+        if "moved" in payload["NEW"] and hit(compound):
+            return {"action": "UPDATE", "target_id": hit(compound), "reason": "moved",
+                    "remainder": "works as a nurse"}  # fmt: skip
+        if "quit" in payload["NEW"] and hit("works as a nurse"):  # the remainder
+            return {"action": "UPDATE", "target_id": hit("works as a nurse"), "reason": "quit",
+                    "remainder": None}  # fmt: skip
+        return {"action": "ADD", "target_id": None, "reason": "new", "remainder": None}
+
+    engine, _ = _engine(store, clock, decide)
+    _say(engine, ADA, "lives in Wellington and works as a nurse")
+    _say(engine, ADA, "moved to Auckland", "quit nursing")
+    assert sorted(current(engine)) == ["moved to Auckland", "quit nursing"]
+
+
+def test_a_memory_whose_batch_replacement_was_deleted_can_be_replaced_again(
+    store: Store, clock: Clock
+) -> None:
+    """Codex, 2026-11-20: after a batch fact that replaced a stored memory is DELETEd by a later
+    one, a third fact aimed at the stored memory was redirected to the removed fact's id."""
+
+    def decide(payload: dict[str, Any]) -> dict[str, Any]:
+        def hit(fact: str) -> str | None:
+            return next((e["id"] for e in payload["EXISTING"] if e["fact"] == fact), None)
+
+        new, home = payload["NEW"], hit("lives in Wellington")
+        if new == "moved to Auckland" and home:
+            return {"action": "UPDATE", "target_id": home, "reason": "moved"}
+        if new == "Auckland fell through" and hit("moved to Auckland"):
+            return {"action": "DELETE", "target_id": hit("moved to Auckland"), "reason": "off"}
+        if new == "moved to Sydney" and home:
+            return {"action": "UPDATE", "target_id": home, "reason": "moved"}
+        return {"action": "ADD", "target_id": None, "reason": "new"}
+
+    engine, _ = _engine(store, clock, decide)
+    [home] = _say(engine, ADA, "lives in Wellington")
+    events = _say(engine, ADA, "moved to Auckland", "Auckland fell through", "moved to Sydney")
+    sydney = next(e for e in events if e.content == "moved to Sydney")
+    assert (sydney.op, sydney.replaced) == ("SUPERSEDE", home.memory_id)
+    assert sorted(current(engine)) == ["Auckland fell through", "moved to Sydney"]
+
+
 def test_a_remainder_already_held_is_not_stored_again(store: Store, clock: Clock) -> None:
     engine, _ = _engine(store, clock, _moves("Wellington", "works as a nurse"))
     _say(engine, ADA, "lives in Wellington and works as a nurse")

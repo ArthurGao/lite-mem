@@ -164,7 +164,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 - **合并**：同一 scope、同一类型（`semantic`、`procedural`；`profile` 永不合并，新值取代旧值）内，向量相似度不低于阈值的记忆分成组，由 `consolidate` 角色判断是不是**同一个事实**（换了说法，或一条更精确），是就写成一句；说的是不同的事（两个城市、一个变化），就不合并。合并结果是一条新记忆，来源各写 `superseded_by`，每一行都记 MERGE。新记忆的字段由一条规则决定（`_inherit`）：最早那条的类型和 metadata、最高的重要性和置信度、所有来源都会过期时才过期（取最晚的）。合并结果和其他派生事实一样过敏感信息筛查。阈值默认 0.92，S7 用 eval 定（见 §12）。
 - **归纳**（默认关闭）：一个 scope 里早于 N 天的 episodic 记忆，由 `consolidate` 角色归纳成 semantic 事实，每个事实列出它总结的 episode（只能是给它的、每个只用一次），被总结的 episode 以 MERGE 关闭。
 - **遗忘**（默认关闭）：会衰减的类型（配了半衰期的，默认 episodic）里，搜索权重低于阈值、并且 N 天没被检索命中的记忆，以 EXPIRE 关闭。
-- **写入时的复合事实**：消解器判 UPDATE / DELETE 时，如果旧记忆说了几件事、只变了一部分，给出 `remainder`（仍然成立的部分），代码把它另存一条（S6 验收发现："住 Wellington，是护士" 被搬家取代，"是护士"跟着丢了）。
+- **写入时的复合事实**：消解器判 UPDATE / DELETE 时，如果旧记忆说了几件事、只变了一部分，给出 `remainder`（仍然成立的部分），代码把它另存一条（S6 验收发现："住 Wellington，是护士" 被搬家取代，"是护士"跟着丢了）。代码只在旧记忆是复合句（有 "and"、逗号、分号、"和"、"并且" 等连接）时接受 remainder：只说一件事的记忆被改掉，就没有剩下的部分（2026-11-20：qwen3 会把它截短后当 remainder，"在咖啡店兼职做咖啡师" 辞职后留下 "兼职做咖啡师"）。remainder 也不能重复同一批已加的事实；同一批后面的事实如果 remainder 已经说了，就不再写。
 - 这些都是离线任务：`litemem maintain`、`POST /v1/maintain`，或调用方自己的定时任务；不在写入路径上。模型调用在事务外，写入时在锁下复查（来源仍然有效、仍在同一个 scope），变了的组跳过，下次再看。`maintain` 和 `add` 一样返回事件。
 
 ## 7. HTTP 服务（`litemem serve`）
@@ -438,6 +438,19 @@ lite-mem/
   Codex 审查 lite-rag 时提出、这边同样成立的三条也一起改了（先写失败的测试）：`redact` 遮住 `Authorization: Bearer …`、
   `api_key=`、`token:`、`secret=`；无 key 模式也拒绝 `Via`、`X-Forwarded-Host/-Proto/-Port/-Prefix`；`sensitive` 认出
   GitHub 细粒度 token `github_pat_`。
+- **复合事实的 remainder 收紧（2026-11-20）**：跨仓库 smoke 里辞去银行工作后，"Works at a bank" 又被当 remainder 加回
+  当前记忆。用真 qwen3:8b（不思考）做了一组专门测量（scratch 脚本，8 个场景各 8 次，旧事实用 `--raw` 原样存）：4 个旧事实只说
+  一件事的场景（换工作、狗去世、猫走失、辞掉咖啡店工作）不该有 remainder，4 个复合句场景必须留下没变的部分。
+  原来坏 remainder 10/64（咖啡店 8/8："兼职做咖啡师"），只改提示词后 7/64（咖啡店 6/8），所以由代码决定：
+  (1) 只有复合句（`terms()` 里有 and / 和 / 并且 / 而且 / 同时，或有逗号、分号、顿号）才接受 remainder；
+  (2) remainder 登记为本批的事实，后面的事实能看到、能改它，本批已有的事实不再写第二遍（同一批里 "Sells Corolla" 存了两遍，2/6）；
+  (3) 提示词写明 remainder 不重复已经变了的部分（反例不用测量集里的场景）。最终坏 remainder 0/64，该留的 0/64 丢失。
+  `litemem eval -v resolve -v terse_prompt` 两次：resolve 19/19、0/7 stale、10/11，和 15/19、1/7、8/11（这一次有两段被
+  Ollama 500 打断，丢的正是那两段的事实）；terse_prompt 17/19、18/19，stale 1/7、1/7，11/11（第一次一段超时）；
+  和 S12 的范围一致（`eval/results/2026-11-20-remainder-after-{1,2}.json`）。Codex 另指出一处原有的问题：本批一条替换已存记忆
+  的事实被后面的 DELETE 拿掉后，`claimed` 还指着它，第三条再指向那条已存记忆时会落到已删除的 id 上；拿掉时一并清掉（先写失败的测试）。
+  不改：Codex 认为 DELETE 本批事实时不该再写入这条新事实——DELETE 已存记忆也是"退休旧的 + 记下新的"（"Max passed away"），保持一致。
+  没处理、记下：抽取漏掉 "My wife Anna"（6/6 只存了狗）；消解偶尔判 ADD、理由却说旧事实不再成立（1/6）。
 
 ## 13. 待确认
 
