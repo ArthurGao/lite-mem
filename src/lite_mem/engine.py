@@ -6,6 +6,7 @@ idempotency record commit together."""
 
 import dataclasses
 import logging
+import re
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
@@ -637,12 +638,15 @@ class MemoryEngine:
         accepted: dict[uuid.UUID, _Step] = {}  # batch-local id -> the step that adds it
         claimed: dict[uuid.UUID, uuid.UUID] = {}  # stored memory -> batch-local id replacing it
         for add, near in zip(adds, stored, strict=True):
-            pending = [  # facts this batch accepted, shown like memories (batch-local ids)
+            pending = [  # facts this batch accepted, remainders too, shown like memories
                 _new_memory(step.op.fact, scope, self._now(), local)
                 for local, step in accepted.items()
                 if isinstance(step.op, Add)
             ]
-            decision = self._resolver.resolve(add.fact.content, near + pending)
+            if _held(add.fact.content, [m.content for m in pending]):  # this batch says it
+                continue
+            candidates = near + pending
+            decision = self._resolver.resolve(add.fact.content, candidates)
             action, target, reason = decision.action, decision.target, decision.reason
             allowed = {m.id for m in near} | set(accepted)
             if action in ("UPDATE", "DELETE") and target not in allowed:
@@ -655,6 +659,7 @@ class MemoryEngine:
             if target is not None and target in accepted:  # a fact of this very batch
                 earlier = accepted.pop(target)
                 steps.remove(earlier)
+                claimed = {gone: by for gone, by in claimed.items() if by != target}
                 if action == "UPDATE" and isinstance(earlier.op, Add) and earlier.op.replaces:
                     replaces = earlier.op.replaces[0]  # the later wording takes over its target
             elif action == "UPDATE":
@@ -674,10 +679,15 @@ class MemoryEngine:
                 old is not None
                 and decision.remainder
                 and action in ("UPDATE", "DELETE")
+                and _compound(old.content)
                 and _restates(decision.remainder, old.content)
-                and not _held(decision.remainder, [add.fact.content, *(m.content for m in near)])
+                and not _held(
+                    decision.remainder, [add.fact.content, *(m.content for m in candidates)]
+                )
             ):
-                steps += self._kept(old, decision.remainder, scope, decision.produced_by)
+                for kept in self._kept(old, decision.remainder, scope, decision.produced_by):
+                    steps.append(kept)
+                    accepted[uuid7()] = kept  # a later fact of the batch may change it
         return steps
 
     def _kept(self, old: Memory, remainder: str, scope: Scope, by: str | None) -> list[_Step]:
@@ -939,6 +949,17 @@ def _restates(part: str, whole: str) -> bool:
     already stored fact as the remainder of an atomic one)."""
     words, said = set(terms(part)), set(terms(whole))
     return bool(words) and len(words & said) >= 0.5 * len(words)
+
+
+_JOINING_WORDS = frozenset({"and", "和", "并且", "而且", "同时"})
+_SEPARATORS = re.compile(r"[,;，、；]")
+
+
+def _compound(fact: str) -> bool:
+    """Whether a fact joins several statements, so a part of it can outlive a change. A fact
+    about one thing has no remainder: qwen3 shortened such facts and called that the remainder
+    ("works part-time at a cafe as a barista" -> "works part-time as a barista", 2026-11-20)."""
+    return bool(_JOINING_WORDS.intersection(terms(fact))) or _SEPARATORS.search(fact) is not None
 
 
 def _held(text: str, contents: Sequence[str]) -> bool:

@@ -1,0 +1,255 @@
+{
+  "at": "2026-11-20T04:54:17+00:00",
+  "git": "c955e6e",
+  "dataset": "eval/dataset.json",
+  "dataset_sha256": "52678ce502dbaf3a86812e5da134f397f6f9aa8f807ccbc1a0d083413b5a1d71",
+  "k": 3,
+  "settings": {
+    "resolve": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "max_retries": 4,
+        "dim": null
+      },
+      "llm": {
+        "temperature": null,
+        "max_output_tokens": null,
+        "reasoning_effort": "none",
+        "timeout_s": 120.0,
+        "connect_timeout_s": 10.0,
+        "max_retries": 2,
+        "backend": "openai",
+        "model": "qwen3:8b",
+        "roles": {},
+        "backends": {
+          "ollama": {
+            "type": "ollama",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "openai": {
+            "type": "openai",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": true
+          },
+          "anthropic": {
+            "type": "anthropic",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "gateway": {
+            "type": "gateway",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "litellm": {
+            "type": "litellm",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [
+              "smart-router"
+            ],
+            "keyless": false
+          }
+        },
+        "forbid_channels": [],
+        "prices": {}
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    },
+    "terse_prompt": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "max_retries": 4,
+        "dim": null
+      },
+      "llm": {
+        "temperature": null,
+        "max_output_tokens": null,
+        "reasoning_effort": "none",
+        "timeout_s": 120.0,
+        "connect_timeout_s": 10.0,
+        "max_retries": 2,
+        "backend": "openai",
+        "model": "qwen3:8b",
+        "roles": {},
+        "backends": {
+          "ollama": {
+            "type": "ollama",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "openai": {
+            "type": "openai",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": true
+          },
+          "anthropic": {
+            "type": "anthropic",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "gateway": {
+            "type": "gateway",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "litellm": {
+            "type": "litellm",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [
+              "smart-router"
+            ],
+            "keyless": false
+          }
+        },
+        "forbid_channels": [],
+        "prices": {}
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts_terse.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    }
+  },
+  "reports": [
+    {
+      "system": "resolve",
+      "k": 3,
+      "present": 19,
+      "remembered": 15,
+      "stale_checks": 7,
+      "stale": 1,
+      "questions": 11,
+      "hits": 8,
+      "memories": 17,
+      "closed": 0,
+      "errors": 2,
+      "add_seconds": [
+        10.751694415987004,
+        20.675714708981104,
+        47.46477383299498,
+        37.138470333011355,
+        9.149805457971524,
+        9.041703458002303,
+        16.083645791048184,
+        5.880438624997623,
+        132.74385629198514,
+        376.4129893750069,
+        8.377412417030428
+      ],
+      "misses": [
+        "xiaowang s1: forgot '会计'",
+        "xiaowang s3: role resolve (openai:qwen3:8b) failed: InternalServerError",
+        "xiaowang s3: forgot '上海'",
+        "xiaowang s3: forgot '数据分析'",
+        "xiaowang s3: still remembers '北京'",
+        "xiaowang: no hit for '她现在住在哪个城市？'",
+        "xiaowang: no hit for '她现在做什么工作？'",
+        "emma: no hit for 'When does she work?'",
+        "li s2: role resolve (openai:qwen3:8b) failed: InternalServerError",
+        "li s2: forgot 'AWS'"
+      ],
+      "recall": 0.7894736842105263,
+      "stale_rate": 0.14285714285714285,
+      "hit_rate": 0.7272727272727273
+    },
+    {
+      "system": "terse_prompt",
+      "k": 3,
+      "present": 19,
+      "remembered": 18,
+      "stale_checks": 7,
+      "stale": 1,
+      "questions": 11,
+      "hits": 11,
+      "memories": 13,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        138.40429212496383,
+        124.65687816700665,
+        12.202540791011415,
+        8.72484749997966,
+        9.039053750049789,
+        0.5505790410097688,
+        11.931754250021186,
+        5.882191958022304,
+        9.091328916954808,
+        4.714360166981351,
+        4.714583209017292
+      ],
+      "misses": [
+        "emma s2: forgot 'Mo'",
+        "li s3: still remembers '准备'"
+      ],
+      "recall": 0.9473684210526315,
+      "stale_rate": 0.14285714285714285,
+      "hit_rate": 1.0
+    }
+  ]
+}

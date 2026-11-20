@@ -152,3 +152,24 @@ def test_no_role_may_use_a_routing_alias(monkeypatch: pytest.MonkeyPatch) -> Non
     config = LLMConfig.model_validate({"roles": routed})
     with pytest.raises(ConfigError, match="routing alias and the role is not routable"):
         LiteModelLLM.build(config)
+
+
+@pytest.mark.parametrize(
+    ("fact", "compound"),
+    [
+        ("Lives in Wellington and works as a nurse", True),
+        ("Works at Google as a software engineer, lives in Sydney", True),
+        ("住在北京，在银行做会计", True),
+        ("喜欢绿茶和咖啡", True),
+        ("Works part-time at a cafe as a barista", False),
+        ("Has a dog named Max", False),
+        ("Works at a brand agency in Auckland", False),  # "and" inside a word
+        ("在银行做会计", False),
+        ("住在和平路", False),  # 和 inside a word, not joining two statements
+        ("性格温和", False),
+    ],
+)
+def test_only_a_compound_fact_can_leave_a_remainder(fact: str, compound: bool) -> None:
+    from lite_mem.engine import _compound
+
+    assert _compound(fact) is compound
