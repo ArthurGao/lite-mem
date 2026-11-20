@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -9,7 +10,14 @@ import pytest
 
 from lite_mem.config import LLMConfig
 from lite_mem.errors import ConfigError, ModelError
-from lite_mem.extract import MAX_FACTS, ExtractedFact, LlmExtractor, normalise
+from lite_mem.extract import (
+    MAX_FACTS,
+    MAX_LEFT_OUT,
+    ExtractedFact,
+    LlmExtractor,
+    mentioned,
+    normalise,
+)
 from lite_mem.llm import LiteModelLLM
 from lite_mem.resolve import Decision, LlmResolver
 from lite_mem.testing import FakeLLM, RuleExtractor, memory, user_lines
@@ -255,3 +263,20 @@ def test_the_recheck_can_be_turned_off() -> None:
         [Message("user", "Wife is Anna / Has a dog named Max")]
     )
     assert [f.content for f in out.facts] == ["Has a dog named Max"] and len(llm.calls) == 1
+
+
+def test_the_names_asked_for_again_are_capped() -> None:
+    """A message listing many names sends at most MAX_LEFT_OUT of them back, in the order said."""
+    names = [f"Person{chr(97 + i)}" for i in range(MAX_LEFT_OUT + 5)]
+    llm = FakeLLM(extract=lambda _payload: {"facts": []})
+    LlmExtractor(llm).extract([Message("user", " / ".join(f"knows {n}" for n in names))])
+    assert llm.calls[1][1]["LEFT_OUT"] == names[:MAX_LEFT_OUT]
+
+
+def test_finding_names_is_linear_in_the_text() -> None:
+    """Up to MAX_MESSAGES x MAX_MESSAGE_CHARS of user text reaches `mentioned`: judging each word
+    by copying the text before it was quadratic (security review, 2026-11-20)."""
+    text = "a Bob. " * 150_000  # ~1M characters, 150k capitalised words
+    started = time.perf_counter()
+    assert mentioned(text) == ["Bob"]
+    assert time.perf_counter() - started < 2

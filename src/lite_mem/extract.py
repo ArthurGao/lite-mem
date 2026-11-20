@@ -15,6 +15,7 @@ from lite_mem.types import Fact, Message
 
 MAX_FACTS = 20  # per conversation: more is the model listing the chat, not memory
 MAX_EXTRACTED_CHARS = 1000  # tighter than the engine's gate for a caller's fact (2000)
+MAX_LEFT_OUT = 20  # names asked for once more: a long list is a roster, not what was dropped
 _HAN = "\u3400-\u9fff"
 _CJK = re.compile(f"[{_HAN}]")
 # Names and places a message mentions (`mentioned`): a capitalised word that does not open a
@@ -79,7 +80,7 @@ class LlmExtractor:
         # is asked for once more (qwen3:8b kept "has a dog" of "my wife Anna and I have a dog").
         # The first answer stays; only the new facts about those names join it.
         recheck = self._left_out_prompt
-        missing = _left_out(mentioned(spoken), facts) if recheck is not None else []
+        missing = _left_out(mentioned(spoken), facts)[:MAX_LEFT_OUT] if recheck is not None else []
         if recheck is not None and missing:
             again, provenance = self._llm.structured(  # same role and model: one tag for both
                 "extract", self._prompt + recheck, {**payload, "LEFT_OUT": missing}, ExtractedFacts
@@ -121,8 +122,10 @@ def _proper(word: str) -> bool:
 
 
 def _opens_sentence(text: str, at: int) -> bool:
-    before = text[:at].rstrip()
-    return not before or before[-1] in _SENTENCE_ENDS
+    # walk back over the spaces, never copy the text before `at`: that made `mentioned` quadratic
+    while at > 0 and text[at - 1].isspace():
+        at -= 1
+    return at == 0 or text[at - 1] in _SENTENCE_ENDS
 
 
 def _left_out(names: list[str], facts: list[ExtractedFact]) -> list[str]:
