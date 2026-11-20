@@ -70,7 +70,7 @@ packages = ["lite_mem"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["jieba", "mem0", "mem0.*", "sqlite_vec"]
+module = ["jieba", "jieba.*", "mem0", "mem0.*", "sqlite_vec"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
