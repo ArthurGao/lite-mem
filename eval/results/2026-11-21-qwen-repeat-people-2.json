@@ -1,0 +1,128 @@
+{
+  "at": "2026-11-20T19:11:25+00:00",
+  "git": "455e8f2",
+  "dataset": "eval/dataset-people.json",
+  "dataset_sha256": "fccdae82d416234b478b99aaa19c3810c9e3c697e9e84d9c439243bd8e15f5a7",
+  "k": 3,
+  "settings": {
+    "resolve": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "max_retries": 4,
+        "dim": null
+      },
+      "llm": {
+        "temperature": null,
+        "max_output_tokens": null,
+        "reasoning_effort": "none",
+        "timeout_s": 120.0,
+        "connect_timeout_s": 10.0,
+        "max_retries": 2,
+        "backend": "openai",
+        "model": "qwen3:8b",
+        "roles": {},
+        "backends": {
+          "ollama": {
+            "type": "ollama",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "openai": {
+            "type": "openai",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": true
+          },
+          "anthropic": {
+            "type": "anthropic",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "gateway": {
+            "type": "gateway",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "litellm": {
+            "type": "litellm",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [
+              "smart-router"
+            ],
+            "keyless": false
+          }
+        },
+        "forbid_channels": [],
+        "prices": {}
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "left_out_prompt": "extract_left_out.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    }
+  },
+  "reports": [
+    {
+      "system": "resolve",
+      "k": 3,
+      "present": 17,
+      "remembered": 17,
+      "stale_checks": 6,
+      "stale": 1,
+      "questions": 9,
+      "hits": 7,
+      "memories": 17,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        9.445434833003674,
+        4.556556125055067,
+        10.534058166958857,
+        28.960360749973916,
+        14.651001167017967,
+        255.0749747090158,
+        16.796144250023644,
+        4.753711375000421
+      ],
+      "misses": [
+        "riley s2: still remembers 'London'",
+        "riley: no hit for \"Where does Riley's sister live?\"",
+        "riley: no hit for 'What does Lucy do?'"
+      ],
+      "recall": 1.0,
+      "stale_rate": 0.16666666666666666,
+      "hit_rate": 0.7777777777777778
+    }
+  ]
+}
