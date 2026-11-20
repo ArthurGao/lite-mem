@@ -69,6 +69,11 @@ class SearchIn(_Body):
     follow_up: int = 0  # S10; bounds checked by engine.search, like top_k (one status: 400)
 
 
+class ContextIn(SearchIn):  # S13
+    token_budget: int | None = None
+    language: Literal["auto", "en", "zh"] = "auto"
+
+
 class UpdateIn(_Body):
     content: str
     reason: str | None = None
@@ -80,6 +85,11 @@ class EventsOut(BaseModel):
 
 class HitsOut(BaseModel):
     hits: list[MemoryHit]
+
+
+class ContextOut(BaseModel):
+    text: str  # ready for a prompt; "" when nothing was found
+    hits: list[MemoryHit]  # what the text holds, in order
 
 
 class MemoriesOut(BaseModel):

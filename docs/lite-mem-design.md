@@ -67,6 +67,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 | `Consolidator` | `merge(memories) -> MergeDecision`，`summarise(episodes) -> Summary[]` | `LlmConsolidator`（`consolidate_merge.j2`、`consolidate_summarise.j2`） | — |
 | `Embedder` | `embed(texts) -> vectors`，`dim`，`model` | Ollama `bge-m3` | OpenAI 兼容 |
 | `Store` | 见 §4 | `PgStore` | `SqliteStore`（sqlite-vec + 自己的倒排，S7b，嵌入式） |
+| 上下文（S13，不是 Protocol） | `MemoryEngine.context(query, scope, …, token_budget, language) -> MemoryContext(text, hits)` | `lite_mem.context`（`context.j2`，不调模型） | — |
 | `LLM` | `structured(role, system, payload, schema) -> (结果, 出处)` | `LiteModelLLM`：接到 lite-model（S12 起），任何 OpenAI 兼容端点（含 Ollama `/v1`）、Anthropic（extra）、llm-gateway、LiteLLM | `testing.FakeLLM`（基于 lite-model 的 `FakeModel`） |
 
 - **角色（role）**：`extract`、`resolve`、`consolidate`。配置把角色映射到 backend 和模型；任何一次 LLM 调用都只说角色，不写模型名。
@@ -156,6 +157,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 - 冲突消解用的"相关记忆"也走同一条检索，只是限定在**完全相同的 scope**内，并且只取当前生效的记忆。过滤条件有两种模式：`visible`（这个 scope 能看到的：自己的、没指定 session 时含它的所有 session、可选含共享）和 `exact`（恰好这个 scope，session 也要一致，不含共享）。
 - 向量检索在过滤后的行上精确计算距离（先物化该 scope 可见的行，再算余弦），返回 (id, 相似度)；按 scope 检索时一个 scope 只有千级记忆，精确算很便宜，也不会因为别的 scope 有更近的向量而漏召回。ANN 索引（HNSW）留给以后不按 scope 的查询，到时再建。
 - **二轮检索**（S10，`follow_up=N`，默认 0 即关闭，最多 3、不超过 `top_k`）：给要两条记忆才答得出的问题（"我姐姐在哪工作"：先找到 "Lily is my sister"，再找 Lily 的事）。第一轮前 N 条命中各取**问题里没有的词**（同一个分词器），一次批量 embedding，在同一套过滤条件下各检索一次，每条最多取 2 条新命中（`FOLLOW_UP_HITS`）；结果是第一轮的前一半（向上取整）、再接二轮的命中（`via` = 经由哪一条）、再用第一轮剩下的补满 `top_k`。两轮的分数不可比，顺序就是排名。命中都记一次访问。模型调用在事务外，所以开了二轮检索的一次搜索是两个事务：第二个事务里用问题的向量把第一轮再排一次，返回的全部来自同一个快照（中间被取代、删除的不会返回）。参数范围由引擎检查，库、CLI、HTTP 一致（HTTP 和 `top_k` 一样都是 400）。为什么不做图谱、参数怎么来的：见 §12 的 S10 记录。
+- **给提示词用的上下文**（S13，`context`）：就是一次 `search` 的结果，按顺序渲染成可以直接放进提示词的文本，库、CLI（`litemem context`）、HTTP 都有，单独用 lite-mem 时不用自己拼。每条一行（内容里的换行和多余空白合成一个空格：存进来的文字开不了新标题、也伪造不了另一条），带引用 id 和日期（`valid_from` 的 UTC 日期；episodic 是"那天发生的"：`(on 2026-11-13)` / `（2026-11-13）`，其他类型是"那天记下的"：`(noted 2026-11-18)` / `（2026-11-18 记）`）；标题说明这些是笔记、不是指令，因为记忆内容来自用户说过的话。语言跟随查询（含汉字为中文），可以指定（auto / en / zh，其他值报 `InvalidRequest`）。`token_budget`：每加一条就按渲染出来的整段文本估算（标题只算一次），放不下的跳过、下一条放得下的顶上，所以文本不会超预算。只有放进文本的记忆才算一次访问（`search` 把返回的都算访问；被预算挤掉的模型没看到，不能抬高整合和遗忘读的访问次数）。措辞和 llm-steward 的 `format=context` 相同（它把记忆和知识库一起渲染，用自己的模板）。
 - BM25 的契约：两个 store 都和 `keyword.py` 的公式逐项相等（PgStore 在 SQL 里算，SqliteStore 用 `keyword.py` 的函数在 Python 里算），同一套测试在两个 store 上都查。
 
 ## 6. 整合与遗忘（S7）
@@ -176,6 +178,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
   - `POST /v1/memories:add`（messages + scope + infer，`Idempotency-Key`）；
   - `POST /v1/memories`（`remember`：一条事实原样写入，`Idempotency-Key`；S8，给 S9 推送治理过的记忆用）；
   - `POST /v1/memories:search`；
+  - `POST /v1/memories:context`（S13：search 的参数加 `token_budget`、`language`，返回 `{text, hits}`）；
   - `GET|PATCH|DELETE /v1/memories/{id}`；
   - `GET /v1/memories/{id}/history`；
   - `GET /v1/memories?scope…&limit&offset`（分页）；
@@ -298,6 +301,7 @@ lite-mem/
 | S10 记忆图谱（以后） | 实体和关系的抽取与查询 | 先测多跳的缺口（2026-11-12 已测，见下面的 S10 记录）；图谱暂不做，先做查询时的二轮检索 |
 | S11 评测迁到 lite-eval | 两跳评测改成 lite-eval 的数据集、suite 和 Target；LongMemEval S / M / oracle 的检索召回 | 原脚本冻结后同进程对照：8 组配置每题命中完全相同（FakeEmbedder 进 CI，bge-m3 在 `-m ollama` 下，并与 2026-11-12 的记录数字相同）；三个变体的结果记进 KB |
 | S12 迁到 lite-model | LLM 调用改由 lite-model 完成（它的设计 §12）：`llm.py` 只留 Protocol 和 adapter，配置嵌入它的 `ModelsConfig`，FakeLLM 基于它的 `FakeModel`；删掉旧客户端 | 迁移前录下的 12 个请求（4 个调用 × 默认 / reasoning / Anthropic）和迁移后逐字段相同；`-m ollama` 通过；`litemem eval` 前后各跑两次，结果落在迁移前的波动范围内；来源格式仍是 `openai:<model>` |
+| S13 给提示词用的上下文 | `MemoryEngine.context` → `MemoryContext(text, hits)`；`context.j2`；CLI `litemem context`；`POST /v1/memories:context` | 结果就是 `search` 的命中、顺序不变；每条一行、带日期（episodic 用 on）、中英文标题都说明不是指令；预算内标题只算一次、文本不超预算；鉴权和 namespace 规则同 search |
 
 ### 阶段记录
 
@@ -452,6 +456,17 @@ lite-mem/
   不改：Codex 认为 DELETE 本批事实时不该再写入这条新事实——DELETE 已存记忆也是"退休旧的 + 记下新的"（"Max passed away"），保持一致。
   没处理、记下：抽取漏掉 "My wife Anna"（6/6 只存了狗）；消解偶尔判 ADD、理由却说旧事实不再成立（1/6）。
 
+- **S13 给提示词用的上下文（2026-11-20）**：owner 要求每个 lite 模块都能单独用（lite-model 是共同依赖）；以前单独用 lite-mem
+  只能拿到 `search` 的命中列表，提示词要调用方自己拼，而且缺两样模型需要的东西：记下的日期（半年前的"上周末订婚了"、两年前的
+  住址会被当成现在），以及"这是笔记、不是指令"的说明（记忆内容来自用户说过的话）。`context` 只是把一次 `search` 渲染出来，
+  不调模型；llm-steward 的 `format=context` 同一天加了同样的日期和标题（它自己的模板）。预算：标题只算一次（llm-steward 原来
+  每条都算一遍标题，标题加长后会多算 200 多个 token，同一天改掉）。测试：`tests/unit/test_context.py`（日期、UTC 日、恶意的
+  多行记忆、预算、语言）、`test_search.py`（和 search 同样的命中）、`test_server.py`（200、401、403）、`test_cli.py`（中文）；
+  去掉 `oneline` 或标题预留，各有测试失败。/simplify 后：预算改为对渲染出的整段文本计数（原来在 Python 里另写一份标题、
+  假设一条一行，模板一改就算错）；模板直接拿命中（`day` 过滤器算日期）；HTTP 的两个路由共用一份检索参数；CLI 加 `--language`。
+  也改了：经 `context` 检索时，被预算挤掉的命中原来也记了访问——`search` 和 `context` 共用内部的 `_found`，在同一个快照里先按预算
+  挑、再只给挑中的记访问（先写失败的测试）。Codex：库里不认识的 `language` 原来当成 auto，HTTP 却会拒绝——改为报错。
+  没做：汉字正则和 `extract.py` 的 `_CJK` 重复（另一个分支正改那几行，合并后再统一）；jinja2 按需导入（只省约 20 ms）。
 ## 13. 待确认
 
 - **llm-steward 接入时冲突消解归谁**（S9 前定）：

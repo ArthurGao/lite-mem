@@ -29,6 +29,8 @@ from lite_mem.factory import Components
 from lite_mem.server import auth
 from lite_mem.server.schemas import (
     AddIn,
+    ContextIn,
+    ContextOut,
     ErasedOut,
     EventsOut,
     HistoryOut,
@@ -50,6 +52,14 @@ def problem(
     body = {"type": "about:blank", "title": HTTPStatus(status).phrase, "status": status,
             "detail": detail, **extra}  # fmt: skip
     return JSONResponse(body, status_code=status, headers=headers, media_type=PROBLEM)
+
+
+_SEARCH_ARGS = {"top_k", "include_shared", "types", "metadata", "as_of", "follow_up"}
+
+
+def _found_by(body: SearchIn) -> dict[str, Any]:
+    """What search and context take from a request body besides the query and the scope."""
+    return body.model_dump(include=_SEARCH_ARGS)
 
 
 def create_app(settings: Settings, components: Components | None = None) -> FastAPI:
@@ -144,12 +154,15 @@ def create_app(settings: Settings, components: Components | None = None) -> Fast
 
     @app.post("/v1/memories:search", response_model=HitsOut)
     def search(body: SearchIn, engine: Engine) -> HitsOut:
-        hits = engine.search(
-            body.query, body.scope.to_scope(), top_k=body.top_k,
-            include_shared=body.include_shared, types=body.types, metadata=body.metadata,
-            as_of=body.as_of, follow_up=body.follow_up,
+        return HitsOut(hits=engine.search(body.query, body.scope.to_scope(), **_found_by(body)))
+
+    @app.post("/v1/memories:context", response_model=ContextOut)
+    def context(body: ContextIn, engine: Engine) -> ContextOut:
+        found = engine.context(
+            body.query, body.scope.to_scope(), token_budget=body.token_budget,
+            language=body.language, **_found_by(body),
         )  # fmt: skip
-        return HitsOut(hits=hits)
+        return ContextOut(text=found.text, hits=found.hits)
 
     @app.get("/v1/memories", response_model=MemoriesOut)
     def list_memories(

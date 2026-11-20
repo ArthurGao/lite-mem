@@ -8,6 +8,7 @@ from lite_mem.types import Memory
 
 # The default template of each step (config and the step classes both use these).
 EXTRACT = "extract_facts.j2"
+CONTEXT = "context.j2"  # memories rendered for a prompt (lite_mem.context; not a role)
 RESOLVE = "resolve_conflict.j2"
 MERGE = "consolidate_merge.j2"
 SUMMARISE = "consolidate_summarise.j2"

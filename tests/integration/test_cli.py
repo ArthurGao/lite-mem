@@ -197,3 +197,11 @@ def test_search_with_a_follow_up(cli: CliRunner) -> None:
     found = _rows(cli.invoke(app, [*args, "--follow-up", "1"]).output)
     assert [r["content"] for r in found] == ["Lily is my sister", "Lily is a pharmacist"]
     assert found[0]["via"] is None and found[1]["via"] == found[0]["id"]
+
+
+def test_context_prints_the_rendered_memories(cli: CliRunner) -> None:
+    assert cli.invoke(app, ["add", "我住在惠灵顿", "--user", "ada"]).exit_code == 0
+    result = cli.invoke(app, ["context", "我住在哪？", "--user", "ada", "--budget", "200"])
+    assert result.exit_code == 0, result.output
+    heading, line = result.output.strip().splitlines()
+    assert heading.startswith("## 关于用户") and line.endswith(" 记）") and "我住在惠灵顿" in line

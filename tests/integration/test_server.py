@@ -425,3 +425,19 @@ def test_search_takes_a_follow_up_and_names_what_each_hit_came_through(
     for bad in (-1, 4, 3):  # out of range, or more than top_k: one status, like top_k's
         r = client.post("/v1/memories:search", json={**body, "follow_up": bad}, headers=_auth())
         assert _is_problem(r, 400), (bad, r.text)
+
+
+def test_context_is_the_search_rendered_for_a_prompt(components: Components) -> None:
+    """S13: POST /v1/memories:context — same body as search plus a token budget."""
+    client = _client(components)
+    _add(client, "Lives in Wellington")
+    body = {"query": "where do I live", "scope": {"user_id": "ada"}, "token_budget": 200}
+    r = client.post("/v1/memories:context", json=body, headers=_auth())
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["text"].startswith("## About the user (notes from earlier conversations")
+    assert "] Lives in Wellington (noted " in out["text"]
+    assert [h["memory"]["content"] for h in out["hits"]] == ["Lives in Wellington"]
+    assert _is_problem(client.post("/v1/memories:context", json=body), 401)
+    other = client.post("/v1/memories:context", json=body, headers=_auth(namespace="other"))
+    assert _is_problem(other, 403)
