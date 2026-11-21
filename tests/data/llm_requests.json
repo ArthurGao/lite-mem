@@ -10,14 +10,9 @@
     }
    ],
    "model": "claude-x",
-   "system": "You maintain a person's long-term memory. Read the conversation in MESSAGES and list the facts worth\nremembering about the person (the \"user\" turns): who they are, where they live, what they prefer,\nwhat they have, plan or asked for, and what has changed.\n\nFor each fact give:\n- content: one short, self-contained statement (\"Lives in Shanghai\", not \"He said that he moved\"),\n  written in LANGUAGE (given with the conversation), e.g. \"住在上海\" when LANGUAGE is Chinese;\n- type: \"semantic\" for a lasting fact or preference, \"episodic\" for something that happened at a\n  point in time (\"Asked about a refund on Monday\"), \"procedural\" for how they want things done\n  (\"Wants short answers\");\n- importance: 0 to 1, how much it should matter later (a name or an allergy is high, a passing\n  remark is low).\n\nRules:\n- Only what the person said or clearly confirmed. Nothing the assistant said on its own, no guesses,\n  no small talk, no questions, no one-off details that will not matter later.\n- Secrets (passwords, card numbers, keys) are never facts.\n- One fact per piece of information: do not state the same thing twice in different words\n  (\"Lives in Shanghai\" and \"Moved to Shanghai\" are one fact: keep the more complete one).\n- Nothing worth keeping: return an empty list.\n",
-   "tool_choice": {
-    "name": "ExtractedFacts",
-    "type": "tool"
-   },
-   "tools": [
-    {
-     "input_schema": {
+   "output_config": {
+    "format": {
+     "schema": {
       "$defs": {
        "ExtractedFact": {
         "additionalProperties": false,
@@ -66,9 +61,10 @@
       "title": "ExtractedFacts",
       "type": "object"
      },
-     "name": "ExtractedFacts"
+     "type": "json_schema"
     }
-   ]
+   },
+   "system": "You maintain a person's long-term memory. Read the conversation in MESSAGES and list the facts worth\nremembering about the person (the \"user\" turns): who they are, where they live, what they prefer,\nwhat they have, plan or asked for, and what has changed.\n\nFor each fact give:\n- content: one short, self-contained statement (\"Lives in Shanghai\", not \"He said that he moved\"),\n  written in LANGUAGE (given with the conversation), e.g. \"住在上海\" when LANGUAGE is Chinese;\n- type: \"semantic\" for a lasting fact or preference, \"episodic\" for something that happened at a\n  point in time (\"Asked about a refund on Monday\"), \"procedural\" for how they want things done\n  (\"Wants short answers\");\n- importance: 0 to 1, how much it should matter later (a name or an allergy is high, a passing\n  remark is low).\n\nRules:\n- Only what the person said or clearly confirmed. Nothing the assistant said on its own, no guesses,\n  no small talk, no questions, no one-off details that will not matter later.\n- Secrets (passwords, card numbers, keys) are never facts.\n- One fact per piece of information: do not state the same thing twice in different words\n  (\"Lives in Shanghai\" and \"Moved to Shanghai\" are one fact: keep the more complete one).\n- Nothing worth keeping: return an empty list.\n"
   },
   "method": "POST",
   "url": "http://anthropic.test/v1/messages"
@@ -84,14 +80,9 @@
     }
    ],
    "model": "claude-x",
-   "system": "You maintain a person's long-term memory. FACTS are memories about the same person that read alike.\nDecide whether they state the SAME single fact (reworded, or one is a more precise version of the\nother), or not (two cities, two jobs, a change over time, or two different facts on one topic).\n\n- same = true: write that one fact as one short sentence in their language (content), as precise as\n  the most precise of them. Do not add anything they do not say, and never join two different facts\n  into one sentence.\n- same = false: content is null. When unsure, choose false.\n\nGive a one-sentence reason.\n",
-   "tool_choice": {
-    "name": "_MergeAnswer",
-    "type": "tool"
-   },
-   "tools": [
-    {
-     "input_schema": {
+   "output_config": {
+    "format": {
+     "schema": {
       "additionalProperties": false,
       "properties": {
        "content": {
@@ -122,9 +113,10 @@
       "title": "_MergeAnswer",
       "type": "object"
      },
-     "name": "_MergeAnswer"
+     "type": "json_schema"
     }
-   ]
+   },
+   "system": "You maintain a person's long-term memory. FACTS are memories about the same person that read alike.\nDecide whether they state the SAME single fact (reworded, or one is a more precise version of the\nother), or not (two cities, two jobs, a change over time, or two different facts on one topic).\n\n- same = true: write that one fact as one short sentence in their language (content), as precise as\n  the most precise of them. Do not add anything they do not say, and never join two different facts\n  into one sentence.\n- same = false: content is null. When unsure, choose false.\n\nGive a one-sentence reason.\n"
   },
   "method": "POST",
   "url": "http://anthropic.test/v1/messages"
@@ -140,14 +132,9 @@
     }
    ],
    "model": "claude-x",
-   "system": "You maintain a person's long-term memory. A NEW fact was just extracted. Compare it with EXISTING facts\nabout the same person and choose exactly one action:\n\n- ADD: the new fact is unrelated to every existing fact, or adds information. Keep everything.\n- UPDATE: the new fact replaces one existing fact (it changed, e.g. a new city, a new job). Name it.\n- DELETE: the new fact says one existing fact is no longer true, without replacing it. Name it.\n- NOOP: the new fact says nothing an existing fact does not already say. The new fact is dropped.\n\nRules: name only an id from EXISTING (target_id; null for ADD and NOOP). When unsure, choose ADD.\nGive a one-sentence reason.\n\nremainder: when you UPDATE or DELETE an existing fact that says several separate things and only some\nof them changed, write the parts that are still true as one short fact, in that fact's language (e.g. it\nsaid \"lives in Wellington and works as a nurse\", the new fact is a move: remainder \"works as a nurse\").\nThe remainder never repeats the part that changed, not even shortened: an existing fact about one thing\n(one job, one pet, one home) has no remainder (it said \"volunteers at the city library on Sundays\", the\nnew fact is that this stopped: remainder null, not \"volunteers at the library\"). Otherwise null.\n",
-   "tool_choice": {
-    "name": "Decision",
-    "type": "tool"
-   },
-   "tools": [
-    {
-     "input_schema": {
+   "output_config": {
+    "format": {
+     "schema": {
       "additionalProperties": false,
       "description": "The role's structured output. `target_id` names an EXISTING memory for UPDATE / DELETE.",
       "properties": {
@@ -197,9 +184,10 @@
       "title": "Decision",
       "type": "object"
      },
-     "name": "Decision"
+     "type": "json_schema"
     }
-   ]
+   },
+   "system": "You maintain a person's long-term memory. A NEW fact was just extracted. Compare it with EXISTING facts\nabout the same person and choose exactly one action:\n\n- ADD: the new fact is unrelated to every existing fact, or adds information. Keep everything.\n- UPDATE: the new fact replaces one existing fact (it changed, e.g. a new city, a new job). Name it.\n- DELETE: the new fact says one existing fact is no longer true, without replacing it. Name it.\n- NOOP: the new fact says nothing an existing fact does not already say. The new fact is dropped.\n\nRules: name only an id from EXISTING (target_id; null for ADD and NOOP). When unsure, choose ADD.\nGive a one-sentence reason.\n\nremainder: when you UPDATE or DELETE an existing fact that says several separate things and only some\nof them changed, write the parts that are still true as one short fact, in that fact's language (e.g. it\nsaid \"lives in Wellington and works as a nurse\", the new fact is a move: remainder \"works as a nurse\").\nThe remainder never repeats the part that changed, not even shortened: an existing fact about one thing\n(one job, one pet, one home) has no remainder (it said \"volunteers at the city library on Sundays\", the\nnew fact is that this stopped: remainder null, not \"volunteers at the library\"). Otherwise null.\n"
   },
   "method": "POST",
   "url": "http://anthropic.test/v1/messages"
@@ -215,14 +203,9 @@
     }
    ],
    "model": "claude-x",
-   "system": "You maintain a person's long-term memory. EPISODES are things that happened to or with the person,\neach with an id. Write the durable facts they show (habits, preferences, recurring needs), e.g. three\nepisodes of asking about a refund on Fridays → \"asks about refund status every Friday\".\n\n- Each fact: one short sentence in the episodes' language; sources = the ids of the episodes it\n  summarises (each id at most once over all facts).\n- Leave out episodes that show nothing durable; they stay as they are. No facts is a valid answer.\n",
-   "tool_choice": {
-    "name": "_SummaryAnswer",
-    "type": "tool"
-   },
-   "tools": [
-    {
-     "input_schema": {
+   "output_config": {
+    "format": {
+     "schema": {
       "$defs": {
        "_SummaryFact": {
         "additionalProperties": false,
@@ -263,9 +246,10 @@
       "title": "_SummaryAnswer",
       "type": "object"
      },
-     "name": "_SummaryAnswer"
+     "type": "json_schema"
     }
-   ]
+   },
+   "system": "You maintain a person's long-term memory. EPISODES are things that happened to or with the person,\neach with an id. Write the durable facts they show (habits, preferences, recurring needs), e.g. three\nepisodes of asking about a refund on Fridays → \"asks about refund status every Friday\".\n\n- Each fact: one short sentence in the episodes' language; sources = the ids of the episodes it\n  summarises (each id at most once over all facts).\n- Leave out episodes that show nothing durable; they stay as they are. No facts is a valid answer.\n"
   },
   "method": "POST",
   "url": "http://anthropic.test/v1/messages"

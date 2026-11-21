@@ -19,8 +19,8 @@ from urllib.parse import quote
 import psycopg
 from psycopg import sql
 
-from lite_mem.config import OLLAMA_URL, Settings
-from lite_mem.embedding import build_embedder
+from lite_mem.config import Settings
+from lite_mem.embedding import build_embedder, embed_target
 from lite_mem.errors import ConfigError
 from lite_mem.llm import build_model
 
@@ -32,7 +32,8 @@ class Mem0System:
     name = "mem0-2.2.1"
 
     def __init__(self, settings: Settings, *, schema: str = SCHEMA) -> None:
-        if settings.embedding.provider != "ollama":
+        embed = embed_target(settings.embedding)
+        if embed.type != "ollama" or embed.base_url is None:
             raise ValueError("the mem0 comparison runs on an ollama embedding model")
         os.environ["MEM0_TELEMETRY"] = "false"  # before the import (KB global/mem0 §2.1)
         from mem0 import Memory  # the eval extra
@@ -45,7 +46,7 @@ class Mem0System:
         llm = build_model(settings.llm).target("extract")  # mem0 calls the model itself
         if llm.base_url is None:  # mem0's openai provider would default to api.openai.com
             raise ConfigError(f"mem0 needs an endpoint for {llm.backend}: set its base_url")
-        dim = build_embedder(settings.embedding).dim  # probes once when not configured
+        dim = settings.embedding.dim or build_embedder(settings.embedding).dim
         options = quote(f"-csearch_path={schema},public")
         joiner = "&" if "?" in self._url else "?"
         config: dict[str, Any] = {
@@ -61,8 +62,8 @@ class Mem0System:
             "embedder": {
                 "provider": "ollama",
                 "config": {
-                    "model": settings.embedding.model,
-                    "ollama_base_url": settings.embedding.base_url or OLLAMA_URL,
+                    "model": embed.model,
+                    "ollama_base_url": embed.base_url.removesuffix("/").removesuffix("/v1"),
                     "embedding_dims": dim,
                 },
             },

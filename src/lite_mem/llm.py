@@ -43,12 +43,15 @@ class LLM(Protocol):
 
 
 def build_model(
-    config: LLMConfig, http_client: "httpx2.Client | None" = None
+    config: lite_model.ModelsConfig,
+    http_client: "httpx2.Client | None" = None,
+    roles: RoleSpec = ROLES,
 ) -> lite_model.LiteModel:
-    """lite-model over lite-mem's roles. The whole config is checked before any call (an unknown
-    backend, a missing key or extra, a routing alias) and refused as lite-mem's ConfigError."""
+    """lite-model over lite-mem's roles (the LLM's, or the embedder's). The whole config is
+    checked before any call (an unknown backend, a missing key or extra, a routing alias) and
+    refused as lite-mem's ConfigError."""
     try:
-        return lite_model.build(config, ROLES, http_client=http_client)
+        return lite_model.build(config, roles, http_client=http_client)
     except lite_model.ConfigError as exc:
         raise ConfigError(str(exc)) from exc
 

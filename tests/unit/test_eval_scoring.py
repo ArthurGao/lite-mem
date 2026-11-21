@@ -81,7 +81,7 @@ def test_described_settings_keep_no_credentials() -> None:
                 },
                 "roles": {"resolve": {"backend": "r"}},
             },
-            "embedding": {"base_url": "http://e.test/api", "api_key": "embkey"},
+            "embedding": {"backends": {"ollama": {"base_url": "http://e.test/v1?key=embkey"}}},
         }
     )
     described = ev.describe(settings, {"llm", "embedding", "pipeline"})
@@ -90,7 +90,7 @@ def test_described_settings_keep_no_credentials() -> None:
         assert secret not in text
     assert described["llm"]["backends"]["openai"]["base_url"] == "http://llm.test:8080/v1"
     assert described["llm"]["backends"]["r"]["base_url"] == "https://r.test/v1"
-    assert described["embedding"]["base_url"] == "http://e.test/api"
+    assert described["embedding"]["backends"]["ollama"]["base_url"] == "http://e.test/v1"
     assert described["llm"]["model"] == settings.llm.model
 
 

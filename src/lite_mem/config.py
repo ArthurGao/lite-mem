@@ -4,18 +4,25 @@ Nested keys use `__`, e.g. `LITEMEM_LLM__MODEL=qwen3:8b`.
 Precedence, highest first: explicit arguments, environment, `.env`, defaults."""
 
 from collections.abc import Mapping
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from lite_model import BackendConfig, ModelsConfig
 from lite_model.config import Name
-from pydantic import AfterValidator, BaseModel, Field, SecretStr, StringConstraints, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lite_mem import prompts
 from lite_mem.sensitive import Policy
 from lite_mem.types import MemoryType
 
-OLLAMA_URL = "http://127.0.0.1:11434"  # the local Ollama server (embeddings: /api, LLM: /v1)
+OLLAMA_URL = "http://127.0.0.1:11434"  # the local Ollama server (lite-model reaches it at /v1)
 
 # A namespace: lowercase segments separated by "/", e.g. "app" or "steward/<uuid>".
 Namespace = Annotated[
@@ -42,19 +49,40 @@ OwnSchema = Annotated[
 Role = Literal["extract", "resolve", "consolidate"]
 
 
-class EmbeddingConfig(BaseModel):
-    """One embedding model per namespace (design §4: an index is bound to its model)."""
+# The keys embeddings had before lite-model served them (lite-mem 0.x, S13), and where each went.
+_MOVED_EMBEDDING_KEYS = {
+    "provider": "LITEMEM_EMBEDDING__BACKEND (ollama, openai, or a backend you define)",
+    "base_url": "LITEMEM_EMBEDDING__BACKENDS__<backend>__BASE_URL (the OpenAI-compatible root, "
+    "e.g. http://127.0.0.1:11434/v1 for Ollama)",
+    "api_key": "an environment variable named by "
+    "LITEMEM_EMBEDDING__BACKENDS__<backend>__API_KEY_ENV (openai reads OPENAI_API_KEY by default)",
+}
 
-    provider: Literal["ollama", "openai"] = "ollama"
-    model: str = "bge-m3:567m"
-    # The API root; None = the provider's default (Ollama on the host; OpenAI's API).
-    base_url: str | None = None
-    api_key: SecretStr | None = None
+
+class EmbeddingConfig(ModelsConfig):
+    """One embedding model per namespace (design §4: an index is bound to its model). The calls
+    are lite-model's `embed()` (its design §3.2): lite-model's configuration, with its `ollama` /
+    `openai` / … backends, under `LITEMEM_EMBEDDING__`. The backend name is the index's
+    `provider`: the defaults keep the identity every namespace was created with
+    (`ollama` / `bge-m3:567m`), and Ollama's /v1/embeddings returns the same vectors as the
+    /api/embed lite-mem called before (2026-11-21; `tests/integration/test_embed_ollama.py`)."""
+
+    backend: Name = "ollama"
+    model: Name = "bge-m3:567m"
     timeout_s: float = Field(default=60.0, gt=0)
-    # Retries of the same model on 429 / 5xx / transport errors (backoff 0.5 s, doubling, max 8 s).
+    # Retries of the same model on 429 / 5xx / transport errors (lite-model's, never another model).
     max_retries: int = Field(default=4, ge=0)
     # The model's vector size, when known: skips the one probe call that learns it.
     dim: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _moved_keys(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            moved = [f"{k} -> {to}" for k, to in _MOVED_EMBEDDING_KEYS.items() if k in value]
+            if moved:
+                raise ValueError("embedding settings moved to lite-model's: " + "; ".join(moved))
+        return value
 
 
 class PipelineConfig(BaseModel):

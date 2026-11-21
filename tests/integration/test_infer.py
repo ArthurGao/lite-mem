@@ -147,12 +147,12 @@ def test_without_an_extractor_infer_is_a_config_error(engine: MemoryEngine) -> N
 def test_a_real_round_trip_with_local_models(store: Store, clock: Clock) -> None:
     """qwen3:8b extracts and resolves, bge-m3 embeds — all on the local Ollama."""
     from lite_mem.config import EmbeddingConfig, LLMConfig
-    from lite_mem.embedding import OllamaEmbedder
+    from lite_mem.embedding import build_embedder
     from lite_mem.llm import LiteModelLLM
 
     llm = LiteModelLLM.build(LLMConfig())
     engine = MemoryEngine(
-        store, "real", OllamaEmbedder(EmbeddingConfig()), extractor=LlmExtractor(llm),
+        store, "real", build_embedder(EmbeddingConfig()), extractor=LlmExtractor(llm),
         resolver=LlmResolver(llm), clock=clock,
     )  # fmt: skip
     first = engine.add([Message("user", "你好，我叫小王，我住在北京，平时喜欢喝绿茶。")], ADA)
