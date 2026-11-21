@@ -388,6 +388,20 @@ def test_finding_what_was_left_out_is_linear_in_the_text() -> None:
     assert time.perf_counter() - started < 2
 
 
+def test_splitting_a_long_run_of_spaces_is_linear() -> None:
+    """Security review, 2026-11-21: the "and"/"but" separator retried its leading-space run
+    from every space, so 20 000 spaces took 3 s and 40 000 took 12 s."""
+    from lite_mem.extract import statements
+    from lite_mem.keyword import terms
+
+    terms("预热")  # jieba loads its dictionary on first use: time the split, not that
+    text = "tea" + " " * 40000 + "cake and bread"
+    started = time.perf_counter()
+    found = list(statements(text))
+    assert time.perf_counter() - started < 1
+    assert [keys for _, keys in found] == [frozenset({"tea", "cake"}), frozenset({"bread"})]
+
+
 def test_a_secret_is_never_asked_for_again() -> None:
     """Codex, 2026-11-21: a password the first answer rightly left out would be sent back in
     LEFT_OUT, asking the model to write it down (the engine would still drop it)."""

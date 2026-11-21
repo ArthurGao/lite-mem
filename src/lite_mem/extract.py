@@ -29,8 +29,11 @@ _SENTENCE_ENDS = ".!?。！？"
 # Statements a message makes (`statements`): split at clause punctuation (a comma or full stop
 # only before a space or the end, so "1,000" and "3.5" stay whole) and at " and " / " but ";
 # a question is not a statement. Its key words are jieba terms of two characters or more (three
-# for Latin) that are not small talk or function words.
-_CLAUSE_END = re.compile(r"([，。；;！!？?\n]|[,.](?=\s|$)|\s+(?:and|but)\s+)", re.IGNORECASE)
+# for Latin) that are not small talk or function words. The " and " run must start after a
+# non-space: otherwise a long run of spaces is retried from every space (quadratic).
+_CLAUSE_END = re.compile(
+    r"([，。；;！!？?\n]|[,.](?=\s|$)|(?<=\S)\s+(?:and|but)\s+)", re.IGNORECASE
+)
 _SENTENCE = re.compile(r"[^。！？!?\n]+?(?:[。！？!?]+|\.(?=\s|$)|\n|$)")
 MAX_STATEMENT_CHARS = 200  # a statement sent back in LEFT_OUT
 _NOT_KEYS = frozenset(
