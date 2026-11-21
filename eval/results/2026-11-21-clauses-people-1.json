@@ -1,0 +1,254 @@
+{
+  "at": "2026-11-20T23:13:04+00:00",
+  "git": "b35924d",
+  "dataset": "/private/tmp/claude-501/-Users-arthurgao-Code-AI-lite-ai/89a81a09-e9c4-4904-a1ca-f65989292ba5/scratchpad/lite-mem-clauses/eval/dataset-people.json",
+  "dataset_sha256": "06aab119211cf4839d0e34ec17818f9d8e8cdc1e8daabd335f335db62ba8a21d",
+  "k": 3,
+  "settings": {
+    "resolve": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "max_retries": 4,
+        "dim": null
+      },
+      "llm": {
+        "temperature": null,
+        "max_output_tokens": null,
+        "reasoning_effort": "none",
+        "timeout_s": 120.0,
+        "connect_timeout_s": 10.0,
+        "max_retries": 2,
+        "backend": "openai",
+        "model": "qwen3:8b",
+        "roles": {},
+        "backends": {
+          "ollama": {
+            "type": "ollama",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "openai": {
+            "type": "openai",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": true
+          },
+          "anthropic": {
+            "type": "anthropic",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "gateway": {
+            "type": "gateway",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "litellm": {
+            "type": "litellm",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [
+              "smart-router"
+            ],
+            "keyless": false
+          }
+        },
+        "forbid_channels": [],
+        "prices": {}
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "left_out_prompt": "extract_left_out.j2",
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    },
+    "no_recheck": {
+      "embedding": {
+        "provider": "ollama",
+        "model": "bge-m3:567m",
+        "base_url": null,
+        "api_key": null,
+        "timeout_s": 60.0,
+        "max_retries": 4,
+        "dim": null
+      },
+      "llm": {
+        "temperature": null,
+        "max_output_tokens": null,
+        "reasoning_effort": "none",
+        "timeout_s": 120.0,
+        "connect_timeout_s": 10.0,
+        "max_retries": 2,
+        "backend": "openai",
+        "model": "qwen3:8b",
+        "roles": {},
+        "backends": {
+          "ollama": {
+            "type": "ollama",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "openai": {
+            "type": "openai",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": true
+          },
+          "anthropic": {
+            "type": "anthropic",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "gateway": {
+            "type": "gateway",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [],
+            "keyless": false
+          },
+          "litellm": {
+            "type": "litellm",
+            "base_url": null,
+            "api_key_env": null,
+            "channel": null,
+            "router_aliases": [
+              "smart-router"
+            ],
+            "keyless": false
+          }
+        },
+        "forbid_channels": [],
+        "prices": {}
+      },
+      "search": {
+        "candidates": 50,
+        "rrf_k": 60,
+        "importance_boost": 0.3,
+        "half_lives": {
+          "episodic": 30.0
+        },
+        "low_confidence": 0.5,
+        "low_confidence_factor": 0.8
+      },
+      "pipeline": {
+        "resolver": "llm",
+        "related": 5,
+        "extract_prompt": "extract_facts.j2",
+        "left_out_prompt": null,
+        "resolve_prompt": "resolve_conflict.j2",
+        "sensitive": "drop"
+      }
+    }
+  },
+  "reports": [
+    {
+      "system": "resolve",
+      "k": 3,
+      "present": 23,
+      "remembered": 22,
+      "stale_checks": 6,
+      "stale": 1,
+      "questions": 13,
+      "hits": 10,
+      "memories": 23,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        12.259009833040182,
+        4.55551945901243,
+        10.361611792002805,
+        25.225453458959237,
+        7.271008541982155,
+        17.113189750001766,
+        16.553154708002694,
+        10.617804541019723,
+        26.255383416020777,
+        11.831802833999973
+      ],
+      "misses": [
+        "chen s1: forgot '杭州'",
+        "chen: no hit for '她住在哪个城市？'",
+        "riley s2: still remembers 'London'",
+        "riley: no hit for \"Where does Riley's sister live?\"",
+        "riley: no hit for 'What does Lucy do?'"
+      ],
+      "recall": 0.9565217391304348,
+      "stale_rate": 0.16666666666666666,
+      "hit_rate": 0.7692307692307693
+    },
+    {
+      "system": "no_recheck",
+      "k": 3,
+      "present": 23,
+      "remembered": 21,
+      "stale_checks": 6,
+      "stale": 1,
+      "questions": 13,
+      "hits": 10,
+      "memories": 23,
+      "closed": 0,
+      "errors": 0,
+      "add_seconds": [
+        8.754119709017687,
+        5.125876625010278,
+        10.377883875044063,
+        9.928347291017417,
+        7.3610953749739565,
+        142.6451579160057,
+        16.378644125012215,
+        9.018816750030965,
+        12.880091624974739,
+        8.776984833006281
+      ],
+      "misses": [
+        "chen s1: forgot '杭州'",
+        "chen: no hit for '她住在哪个城市？'",
+        "riley s2: still remembers 'London'",
+        "riley: no hit for \"Where does Riley's sister live?\"",
+        "riley: no hit for 'What does Lucy do?'",
+        "laozhou s1: forgot '成都'"
+      ],
+      "recall": 0.9130434782608695,
+      "stale_rate": 0.16666666666666666,
+      "hit_rate": 0.7692307692307693
+    }
+  ]
+}

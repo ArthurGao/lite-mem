@@ -280,3 +280,131 @@ def test_finding_names_is_linear_in_the_text() -> None:
     started = time.perf_counter()
     assert mentioned(text) == ["Bob"]
     assert time.perf_counter() - started < 2
+
+
+def _facts(*contents: str) -> dict[str, Any]:
+    return {"facts": [{"content": c, "type": "semantic", "importance": 0.5} for c in contents]}
+
+
+def test_a_statement_no_fact_covers_is_asked_for_once_more() -> None:
+    """qwen3:8b, 2026-11-21: "在一家银行做会计" was dropped whole in every eval run (only 北京 and
+    花生 kept). A clause none of whose words reaches a fact is sent back with the names; the
+    greeting, the clause that only gives the name and the covered clauses are not."""
+
+    def answer(payload: dict[str, Any]) -> dict[str, Any]:
+        if "LEFT_OUT" not in payload:
+            return _facts("住在北京", "对花生过敏")
+        return _facts("在银行做会计", "名字叫小王", "喜欢喝茶")
+
+    llm = FakeLLM(extract=answer)
+    said = "你好，我叫小王，住在北京，在一家银行做会计。对了，我对花生过敏。"
+    out = LlmExtractor(llm).extract([Message("user", said)])
+    assert llm.calls[1][1]["LEFT_OUT"] == ["小王", "在一家银行做会计"]
+    kept = ["住在北京", "对花生过敏", "在银行做会计", "名字叫小王"]
+    assert [f.content for f in out.facts] == kept
+
+
+def test_an_and_clause_is_its_own_statement() -> None:
+    def answer(payload: dict[str, Any]) -> dict[str, Any]:
+        if "LEFT_OUT" not in payload:
+            return _facts("Lives in Leeds")
+        return _facts("Works as a nurse at the city hospital")
+
+    llm = FakeLLM(extract=answer)
+    said = "I'm Tom, I live in Leeds and work as a nurse at the city hospital."
+    out = LlmExtractor(llm).extract([Message("user", said)])
+    assert llm.calls[1][1]["LEFT_OUT"] == ["Tom", "work as a nurse at the city hospital"]
+    assert [f.content for f in out.facts][-1] == "Works as a nurse at the city hospital"
+
+
+def test_questions_and_small_talk_are_not_asked_for() -> None:
+    llm = FakeLLM(extract=lambda _payload: _facts())
+    said = "你好！顺便问一下，今天天气怎么样？Thanks, by the way. What time is it?"
+    LlmExtractor(llm).extract([Message("user", said)])
+    assert len(llm.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("said", "statements"),
+    [
+        ("我最近喜欢上了绿茶，每天早上都喝一杯。", ["我最近喜欢上了绿茶", "每天早上都喝一杯"]),
+        ("It costs 1,000 dollars. I paid it.", ["It costs 1,000 dollars", "I paid it"]),
+        ("Is it far? I walk there daily", ["I walk there daily"]),
+        ("I swim but hate running.", ["I swim", "hate running"]),
+    ],
+)
+def test_the_statements_a_message_makes(said: str, statements: list[str]) -> None:
+    from lite_mem.extract import statements as split
+
+    assert [s for s, _keys in split(said)] == statements
+
+
+def test_a_statement_with_a_covered_place_is_still_checked() -> None:
+    def answer(payload: dict[str, Any]) -> dict[str, Any]:
+        return _facts("住在北京") if "LEFT_OUT" not in payload else _facts("在医院当护士")
+
+    llm = FakeLLM(extract=answer)
+    out = LlmExtractor(llm).extract([Message("user", "我住在北京，在北京的一家医院当护士。")])
+    assert llm.calls[1][1]["LEFT_OUT"] == ["在北京的一家医院当护士"]
+    assert [f.content for f in out.facts] == ["住在北京", "在医院当护士"]
+
+
+def test_the_second_ask_sends_only_the_sentences_that_hold_what_was_left_out() -> None:
+    """qwen3:8b, 2026-11-21: asked again with the whole message it dropped the job again (8/8);
+    the sentence alone kept it (4/4). Whole sentences, not clauses: "is a doctor" alone would read
+    as the user's."""
+
+    def answer(payload: dict[str, Any]) -> dict[str, Any]:
+        return _facts("住在北京", "对花生过敏") if "LEFT_OUT" not in payload else _facts()
+
+    llm = FakeLLM(extract=answer)
+    turns = [
+        Message("user", "你好，我叫小王，住在北京，在一家银行做会计。对了，我对花生过敏。"),
+        Message("assistant", "好的，记住了。"),
+        Message("user", "我每天骑车上班。"),
+    ]
+    LlmExtractor(llm).extract(turns)
+    again = llm.calls[1][1]
+    assert again["LEFT_OUT"] == ["小王", "在一家银行做会计", "我每天骑车上班"]
+    assert again["MESSAGES"] == [
+        {"role": "user", "content": "你好，我叫小王，住在北京，在一家银行做会计。 我每天骑车上班。"}
+    ]
+
+
+def test_finding_what_was_left_out_is_linear_in_the_text() -> None:
+    """The hot path (efficiency review, 2026-11-21): many left-out names times many
+    statements was a quadratic check before the MAX_LEFT_OUT cap applied."""
+    from lite_mem.extract import _missing
+    from lite_mem.keyword import terms
+
+    terms("预热")  # jieba loads its dictionary on first use (~0.5 s): time the algorithm, not that
+    text = "".join(
+        f"we met Ann{chr(97 + i % 26)}{chr(97 + i // 26 % 26)}{i}, red tea {i}. "
+        for i in range(12000)
+    )
+    started = time.perf_counter()
+    missing = _missing(text, [])
+    assert len(missing[:MAX_LEFT_OUT]) == MAX_LEFT_OUT
+    assert time.perf_counter() - started < 2
+
+
+def test_splitting_a_long_run_of_spaces_is_linear() -> None:
+    """Security review, 2026-11-21: the "and"/"but" separator retried its leading-space run
+    from every space, so 20 000 spaces took 3 s and 40 000 took 12 s."""
+    from lite_mem.extract import statements
+    from lite_mem.keyword import terms
+
+    terms("预热")  # jieba loads its dictionary on first use: time the split, not that
+    text = "tea" + " " * 40000 + "cake and bread"
+    started = time.perf_counter()
+    found = list(statements(text))
+    assert time.perf_counter() - started < 1
+    assert [keys for _, keys in found] == [frozenset({"tea", "cake"}), frozenset({"bread"})]
+
+
+def test_a_secret_is_never_asked_for_again() -> None:
+    """Codex, 2026-11-21: a password the first answer rightly left out would be sent back in
+    LEFT_OUT, asking the model to write it down (the engine would still drop it)."""
+    llm = FakeLLM(extract=lambda _payload: _facts("住在北京"))
+    LlmExtractor(llm).extract([Message("user", "我住在北京，我的银行卡密码是 482915。")])
+    assert len(llm.calls) == 1
