@@ -282,6 +282,16 @@ def test_finding_names_is_linear_in_the_text() -> None:
     assert time.perf_counter() - started < 2
 
 
+def test_finding_chinese_places_is_fast() -> None:
+    """2026-11-21: jieba's part-of-speech HMM (it guesses unknown words) took ~35 us a character,
+    7 s for 200k; it tagged no extra place on the eval sets, the tests or rare place names."""
+    mentioned("我住在北京")  # jieba loads its dictionary and tagger on first use: time the cut
+    text = "我和老公小李住在杭州，我们有个女儿叫朵朵。" * 10_000  # 210k characters
+    started = time.perf_counter()
+    assert mentioned(text) == ["杭州", "朵朵"]
+    assert time.perf_counter() - started < 2
+
+
 def _facts(*contents: str) -> dict[str, Any]:
     return {"facts": [{"content": c, "type": "semantic", "importance": 0.5} for c in contents]}
 

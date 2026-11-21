@@ -30,10 +30,12 @@ def terms(text: str) -> list[str]:
 
 
 def places(text: str) -> list[str]:
-    """The places jieba tags `ns` in `text` (two characters or more), in order."""
+    """The places jieba tags `ns` in `text` (two characters or more), in order. Without the HMM
+    that guesses unknown words: it was ~35 us a character (7 s for 200k) and tagged no extra place
+    on the eval sets, the tests or rare place names (measured 2026-11-21)."""
     import jieba.posseg  # here, not at the top: ~190 ms to import, needed for Chinese text only
 
-    return [w for w, flag in jieba.posseg.cut(text) if flag == "ns" and len(w) > 1]
+    return [w for w, flag in jieba.posseg.cut(text, HMM=False) if flag == "ns" and len(w) > 1]
 
 
 def term_counts(text: str) -> Counter[str]:
