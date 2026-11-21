@@ -3,14 +3,16 @@ cleans them (AGENTS.md rule 5). A caller's own facts go through the engine's str
 a model's are normalised here — clipped, de-duplicated and capped, never failing the batch."""
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
 from lite_mem import prompts
-from lite_mem.keyword import places
+from lite_mem.keyword import places, terms
 from lite_mem.llm import LLM
+from lite_mem.sensitive import find
 from lite_mem.types import Fact, Message
 
 MAX_FACTS = 20  # per conversation: more is the model listing the chat, not memory
@@ -24,6 +26,25 @@ _CJK = re.compile(f"[{_HAN}]")
 _WORD = re.compile(r"[^\W\d_][\w'-]*")
 _CALLED = re.compile(rf"(?:名叫|叫做|叫)([{_HAN}]{{2,3}}?)(?=[，。,.！!？?、；;\s]|$)")
 _SENTENCE_ENDS = ".!?。！？"
+# Statements a message makes (`statements`): split at clause punctuation (a comma or full stop
+# only before a space or the end, so "1,000" and "3.5" stay whole) and at " and " / " but ";
+# a question is not a statement. Its key words are jieba terms of two characters or more (three
+# for Latin) that are not small talk or function words.
+_CLAUSE_END = re.compile(r"([，。；;！!？?\n]|[,.](?=\s|$)|\s+(?:and|but)\s+)", re.IGNORECASE)
+_SENTENCE = re.compile(r"[^。！？!?\n]+?(?:[。！？!?]+|\.(?=\s|$)|\n|$)")
+MAX_STATEMENT_CHARS = 200  # a statement sent back in LEFT_OUT
+_NOT_KEYS = frozenset(
+    (
+        "你好 您好 对了 顺便 一下 一家 一个 一些 最近 现在 今天 明天 昨天 "
+        "平时 我们 你们 他们 她们 自己 这个 那个 因为 所以 但是 然后 还是 "
+        "已经 可以 就是 什么 怎么 怎么样 谢谢 一直 还有 另外 其实 觉得 知道 "
+        "开始 帮我 记一下 跟你说 说一下 "
+        "the and but for with have has had been was were are also just really actually very "
+        "about that this they them their there then than what when where how who will would "
+        "could should can our your you his her she him from into lot lots some any all thanks "
+        "thank way by i'm i've i'll i'd it's that's okay yes yeah hello"
+    ).split()
+)
 
 ExtractedType = Literal["semantic", "episodic", "procedural"]
 
@@ -79,13 +100,24 @@ class LlmExtractor:
         # The model proposes, code checks: a name or place the person said that no fact mentions
         # is asked for once more (qwen3:8b kept "has a dog" of "my wife Anna and I have a dog").
         # The first answer stays; only the new facts about those names join it.
+        # A statement none of whose key words reaches a fact is asked for the same way ("在一家银行
+        # 做会计" was dropped whole, 2026-11-21); one that names a left-out name is that name's.
         recheck = self._left_out_prompt
-        missing = _left_out(mentioned(spoken), facts)[:MAX_LEFT_OUT] if recheck is not None else []
+        missing = _missing(spoken, facts) if recheck is not None else []
         if recheck is not None and missing:
+            # Only the sentences that hold what was left out: given the whole message again,
+            # qwen3:8b dropped the job clause again (8/8); given that sentence alone it kept the
+            # job (4/4), and with this second ask 8/8. A sentence that leans on an earlier one
+            # ("她是医生") loses who it is about: accepted, measured on the eval sets.
+            asked = [m.item for m in missing]
+            focus = [{"role": "user", "content": _holding(said, asked)}]
             again, provenance = self._llm.structured(  # same role and model: one tag for both
-                "extract", self._prompt + recheck, {**payload, "LEFT_OUT": missing}, ExtractedFacts
+                "extract",
+                self._prompt + recheck,
+                {**payload, "MESSAGES": focus, "LEFT_OUT": asked},
+                ExtractedFacts,
             )
-            facts = facts + [f for f in again.facts if len(_left_out(missing, [f])) < len(missing)]
+            facts = facts + [f for f in again.facts if _covers(f, missing)]
         return Extraction(normalise(facts), provenance.tag)
 
 
@@ -128,6 +160,63 @@ def _opens_sentence(text: str, at: int) -> bool:
     return at == 0 or text[at - 1] in _SENTENCE_ENDS
 
 
-def _left_out(names: list[str], facts: list[ExtractedFact]) -> list[str]:
-    said = " ".join(f.content for f in facts).lower()
-    return [n for n in names if n.lower() not in said]
+def statements(text: str) -> Iterator[tuple[str, frozenset[str]]]:
+    """The statements `text` makes that carry key words, each with them (see `_CLAUSE_END`)."""
+    parts = _CLAUSE_END.split(text)  # clause, end, clause, end, ..., clause
+    for clause, end in zip(parts[::2], [*parts[1::2], ""], strict=True):
+        clause = clause.strip()
+        if not clause or end in ("?", "？"):
+            continue
+        keys = frozenset(t for t in terms(clause) if _key(t))
+        if keys:
+            yield clause[:MAX_STATEMENT_CHARS], keys
+
+
+def _key(term: str) -> bool:
+    return len(term) >= (2 if _CJK.search(term) else 3) and term not in _NOT_KEYS
+
+
+def _holding(said: list[dict[str, str]], asked: list[str]) -> str:
+    """The user's sentences that hold one of `asked`, in order: whole sentences, so a clause keeps
+    who it is about."""
+    return " ".join(
+        sentence.strip()
+        for turn in said
+        if turn["role"] == "user"
+        for sentence in _SENTENCE.findall(turn["content"])
+        if any(item in sentence for item in asked)
+    )
+
+
+class LeftOut(NamedTuple):
+    item: str  # what goes into LEFT_OUT
+    keys: frozenset[str]  # a fact that holds one of them covers it
+
+
+def _missing(text: str, facts: list[ExtractedFact]) -> list[LeftOut]:
+    """What `text` says that no fact covers, at most MAX_LEFT_OUT: names and places first, then the
+    statements whose own words (names aside: a name covers only itself) reach no fact and that hold
+    no left-out name (it asks for them). Stops at the cap: the text can be 200 x 20,000 chars."""
+    told = " ".join(f.content for f in facts).lower()
+    names = mentioned(text)
+    named = frozenset(n.lower() for n in names)
+    found = [LeftOut(n, frozenset({n.lower()})) for n in names if n.lower() not in told]
+    found = found[:MAX_LEFT_OUT]
+    asked = [m.item for m in found]
+    for statement, keys in statements(text):
+        if len(found) == MAX_LEFT_OUT:
+            break
+        own = keys - named
+        if (
+            own
+            and not any(k in told for k in own)
+            and not any(n in statement for n in asked)
+            and not find(statement)  # never ask the model to write a secret down
+        ):
+            found.append(LeftOut(statement, own))
+    return found
+
+
+def _covers(fact: ExtractedFact, missing: list[LeftOut]) -> bool:
+    content = fact.content.lower()
+    return any(k in content for m in missing for k in m.keys)

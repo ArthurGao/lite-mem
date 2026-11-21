@@ -1,5 +1,5 @@
 {
-  "about": "Synthetic conversations for the cases eval/dataset.json does not cover, found on 2026-11-20 with qwen3:8b: a fact said together with someone else (\"my wife Anna and I have a dog\": the person and the place were dropped), a fact about someone else that later changes, and a single-statement fact that changes (the old one must not come back as a remainder). Scored like dataset.json (design §8). A stale check with no `unless` catches an invented fact: the extract prompt's own example values (Shanghai) and earlier draft examples (Nelson) must never become memories.",
+  "about": "Synthetic conversations for the cases eval/dataset.json does not cover, found on 2026-11-20 with qwen3:8b: a fact said together with someone else (\"my wife Anna and I have a dog\": the person and the place were dropped), a fact about someone else that later changes, and a single-statement fact that changes (the old one must not come back as a remainder). Scored like dataset.json (design §8). A stale check with no `unless` catches an invented fact: the extract prompt's own example values (Shanghai) and earlier draft examples (Nelson) must never become memories. Added 2026-11-21: a job said between a greeting and an afterthought (\"你好，我叫小王，住在北京，在一家银行做会计。对了，我对花生过敏。\" lost the job in every qwen3:8b run), in Chinese and English.",
   "users": [
     {
       "user_id": "james",
@@ -78,6 +78,34 @@
         {"q": "What is Riley's partner called?", "answers": ["Sam"]},
         {"q": "Where does Riley's sister live?", "answers": ["Paris"]},
         {"q": "What does Lucy do?", "answers": ["doctor"]}
+      ]
+    },
+    {
+      "user_id": "laozhou",
+      "sessions": [
+        {
+          "messages": [{"role": "user", "content": "你好，我是老周，住在成都，在一所中学当语文老师。对了，我周末喜欢去钓鱼。"}],
+          "present": [["成都", "Chengdu"], ["老师", "teacher"], ["钓鱼", "fishing"]],
+          "stale": []
+        }
+      ],
+      "questions": [
+        {"q": "老周做什么工作？", "answers": ["老师", "teacher"]},
+        {"q": "老周周末喜欢做什么？", "answers": ["钓鱼", "fishing"]}
+      ]
+    },
+    {
+      "user_id": "maya",
+      "sessions": [
+        {
+          "messages": [{"role": "user", "content": "Hi! I'm Maya, I live in Bristol and I work as a pharmacist at a small chemist. Oh, and I'm vegan."}],
+          "present": [["Bristol"], ["pharmacist"], ["vegan"]],
+          "stale": []
+        }
+      ],
+      "questions": [
+        {"q": "What does Maya do for work?", "answers": ["pharmacist"]},
+        {"q": "What does Maya eat?", "answers": ["vegan"]}
       ]
     }
   ]
