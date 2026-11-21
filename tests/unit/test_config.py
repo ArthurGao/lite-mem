@@ -16,7 +16,7 @@ def _target(settings: Settings, role: str) -> Target:
 def test_defaults_point_at_local_models() -> None:
     s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert (s.db_schema, s.namespace) == ("lite_mem", None)
-    assert (s.embedding.provider, s.embedding.model) == ("ollama", "bge-m3:567m")
+    assert (s.embedding.backend, s.embedding.model) == ("ollama", "bge-m3:567m")
     t = _target(s, "extract")
     # Ollama's /v1 as a keyless `openai` backend: the history keeps `openai:<model>`, no
     # temperature is added, and retries are the OpenAI SDK's own 2 (lite-mem before lite-model)

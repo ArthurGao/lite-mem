@@ -60,11 +60,13 @@ def _openai_reply(request: httpx2.Request) -> httpx2.Response:
 
 
 def _anthropic_reply(request: httpx2.Request) -> httpx2.Response:
-    name = json.loads(request.content)["tool_choice"]["name"]
+    # lite-model 0.5.0: structured output is `output_config.format` (a JSON schema) and the
+    # answer comes back as text; the forced tool it replaced is refused by newer Claude models
+    name = json.loads(request.content)["output_config"]["format"]["schema"]["title"]
     return httpx2.Response(200, json={
         "id": "m", "type": "message", "role": "assistant", "model": "claude-x",
-        "stop_reason": "tool_use", "stop_sequence": None,
-        "content": [{"type": "tool_use", "id": "t", "name": name, "input": _answer_for(name)}],
+        "stop_reason": "end_turn", "stop_sequence": None,
+        "content": [{"type": "text", "text": json.dumps(_answer_for(name))}],
         "usage": {"input_tokens": 1, "output_tokens": 1},
     })  # fmt: skip
 

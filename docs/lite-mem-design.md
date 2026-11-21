@@ -1,6 +1,6 @@
 # lite-mem 设计文档
 
-> 状态：设计稿（2026-11-11）。按第 12 节的阶段实施；某个阶段改变了行为，就在同一次提交里更新本文。
+> 状态：S0–S14 已完成（2026-11-11 至 11-22；S13 = `context()`，S14 = embedding 改由 lite-model 的 `embed()` 调用）。按第 12 节的阶段实施；某个阶段改变了行为，就在同一次提交里更新本文。
 
 ## 1. 概述
 
@@ -211,7 +211,7 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 pydantic-settings，前缀 `LITEMEM_`：
 
 - 数据库 URL、namespace；
-- embedding provider 和模型；
+- embedding 的 backend 和模型（`LITEMEM_EMBEDDING__`，lite-model 的配置，embed role，见 §12 S14）；
 - 每个角色对应的 LLM backend 和模型（lite-model 的配置，见 §3）；
 - 检索权重和半衰期；
 - 整合和遗忘的阈值；
@@ -302,6 +302,7 @@ lite-mem/
 | S11 评测迁到 lite-eval | 两跳评测改成 lite-eval 的数据集、suite 和 Target；LongMemEval S / M / oracle 的检索召回 | 原脚本冻结后同进程对照：8 组配置每题命中完全相同（FakeEmbedder 进 CI，bge-m3 在 `-m ollama` 下，并与 2026-11-12 的记录数字相同）；三个变体的结果记进 KB |
 | S12 迁到 lite-model | LLM 调用改由 lite-model 完成（它的设计 §12）：`llm.py` 只留 Protocol 和 adapter，配置嵌入它的 `ModelsConfig`，FakeLLM 基于它的 `FakeModel`；删掉旧客户端 | 迁移前录下的 12 个请求（4 个调用 × 默认 / reasoning / Anthropic）和迁移后逐字段相同；`-m ollama` 通过；`litemem eval` 前后各跑两次，结果落在迁移前的波动范围内；来源格式仍是 `openai:<model>` |
 | S13 给提示词用的上下文 | `MemoryEngine.context` → `MemoryContext(text, hits)`；`context.j2`；CLI `litemem context`；`POST /v1/memories:context` | 结果就是 `search` 的命中、顺序不变；每条一行、带日期（episodic 用 on）、中英文标题都说明不是指令；预算内标题只算一次、文本不超预算；鉴权和 namespace 规则同 search |
+| S14 embedding 迁到 lite-model | `embedding.py` 只留 `Embedder` Protocol 和 adapter（`LiteModelEmbedder`），调用走 lite-model 0.5.1 的 `embed()`；`EmbeddingConfig` 改成 lite-model 的 `ModelsConfig` | 索引身份不变（默认 `ollama` / `bge-m3:567m`）；`-m ollama` 下新路径（`/v1/embeddings`）和旧路径（`/api/embed`）向量逐元素相等；旧的 `PROVIDER` / `BASE_URL` / `API_KEY` 启动时报错并指出新键；Anthropic 结构化请求体按 lite-model 0.5.0 的新形状重新固定 |
 
 ### 阶段记录
 
@@ -511,6 +512,29 @@ lite-mem/
   地名，开关 HMM 认出的地名完全相同（HMM 没给任何未登录词标过 `ns`），先写失败的测试。
   推送后的自动安全审查：分句正则里 " and " 前的 `\s+` 在一长串空格上从每个空格重试一遍，是平方级（2 万个空格 3 秒、4 万个 12 秒）；
   改为只从非空白字符后开始匹配（先写失败的测试：4 万个空格 12 秒 → 40 万个 16 毫秒）。
+
+- **S14 embedding 迁到 lite-model（2026-11-22）**：架构评审（2026-11-21）定的：HTTP embedder 收进 lite-model，这一轮只迁 lite-mem。
+  - `EmbeddingConfig` 现在是 lite-model 的 `ModelsConfig`（`LITEMEM_EMBEDDING__BACKEND` / `__MODEL` / `__BACKENDS__…` /
+    `__MAX_RETRIES` / `__TIMEOUT_S`），lite-mem 自己只加 `dim`。默认 `ollama` / `bge-m3:567m`：backend 名就是索引记录的
+    `provider`，所以已有的 namespace 身份不变。llm-steward 设的 `LITEMEM_EMBEDDING__DIM` 照旧可用。
+  - 旧键 `PROVIDER`、`BASE_URL`、`API_KEY` 启动时报错，并写出新键在哪。不报错的话 pydantic 会悄悄忽略它们，namespace 就会用默认模型去
+    embed。
+  - Ollama 改走 OpenAI 兼容的 `/v1/embeddings`；`-m ollama` 测试确认它和以前的 `/api/embed` 向量逐元素相等（1024 维，三段中英文），
+    把实现故意改成倒序后测试变红。
+  - 重试、分批、条数 / 顺序 / 维度检查、错误不带上游文本，都由 lite-model 负责并在那边测试；lite-mem 原来测这些的单元测试随旧实现删除，
+    `tests/unit/test_embedding.py` 改为固定 lite-mem 依赖的部分（身份、请求体、dim、错误类型、旧键）。行为变化一处：dim 从第一次
+    回复里读到，不再为它单独发一次探测请求（先写失败的测试）。
+  - Anthropic：lite-model 0.5.0 起结构化输出用 `output_config.format`，不再强制 tool（新的 Claude 模型会拒绝强制 tool）。
+    `tests/data/llm_requests.json` 只重写了 anthropic 的四条：每条除了 `tools` / `tool_choice` 换成 `output_config`，其余字段
+    逐字段比对过不变；openai 的八条没动。
+  - eval：`_embedding_identity` 用解析后的 target（`provider` 仍是 backend 名，`base_url` 现在是实际端点），旧的 eval 缓存身份
+    会对不上，重跑一次即可；mem0 对照从 target 取 Ollama 地址。
+  - 检查：ruff、format、mypy 通过；pytest 453 passed；`-m ollama` 6 passed。
+  - `/simplify` 采纳：建 lite-model 客户端和错误转换与 LLM 共用 `llm.build_model`（多了 `roles` 参数）；embedder 持有 `Target`，
+    不再另存 provider / model；`embed_target` 改用 `resolve()`，和 `build()` 做同样的校验；eval target 在构造时解析一次；mem0
+    对照的模型名也取自 target，配置了 `dim` 就不再探测。不采纳：把"键已迁移"的提示做成 lite-model 的通用机制（lite-rag 的
+    embedding 迁移如果再写一份，再挪过去）；LLM 和 embedder 共用一个 SDK 客户端（超时和重试不同，没法共用）。
+  - Codex：没有 finding。
 
 ## 13. 待确认
 

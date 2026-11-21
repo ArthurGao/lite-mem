@@ -204,9 +204,9 @@ def test_erase_takes_the_search_entries_too(engine: MemoryEngine, store: Store) 
 @pytest.mark.ollama
 def test_a_real_round_trip_with_ollama(store: Store, clock: Clock) -> None:
     from lite_mem.config import EmbeddingConfig
-    from lite_mem.embedding import OllamaEmbedder
+    from lite_mem.embedding import build_embedder
 
-    engine = MemoryEngine(store, "real", OllamaEmbedder(EmbeddingConfig()), clock=clock)
+    engine = MemoryEngine(store, "real", build_embedder(EmbeddingConfig()), clock=clock)
     for d in ["Lives in Berlin", "Prefers green tea", "Works night shifts as a nurse"]:
         engine.remember(Fact(d), ADA)
     assert _found(engine, "what does she drink", top_k=1) == ["Prefers green tea"]

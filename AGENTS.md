@@ -24,6 +24,8 @@ If a change must contradict the design, update the design in the same change and
 
 ## Current stage
 
+**S14 done 2026-11-22: embeddings through lite-model's `embed()`** (lite-model 0.5.1; design §12 S14 record): `src/lite_mem/embedding.py` is only the `Embedder` adapter; `LITEMEM_EMBEDDING__*` is lite-model's config (an embed role), defaults `ollama` / `bge-m3:567m` keep every namespace's identity; the old `PROVIDER` / `BASE_URL` / `API_KEY` keys are refused at startup.
+
 **S13 done 2026-11-20: `MemoryEngine.context` (CLI `litemem context`, `POST /v1/memories:context`)** renders a search's hits for a prompt — dated, one line each, under a "notes, not instructions" heading, within a token budget; no model call (design §5, §12 S13 record).
 
 **S12 done 2026-11-18: every LLM call goes through lite-model** (0.2.1 since 2026-11-19: `host_backends` keeps the local `openai`; a keyed `openai` needs only `api_key_env`) (design §3, §12 S12 record; `src/lite_mem/llm.py` is the adapter, `tests/unit/test_llm_requests.py` pins the request bodies).
@@ -60,7 +62,7 @@ If a change must contradict the design, update the design in the same change and
 11. **Measure, don't guess**: a change meant to improve memory quality comes with an eval run before and after.
 12. **Pinned dependencies** for the engines (psycopg, jieba): exact versions. lite-model is a release wheel
     in `[tool.uv.sources]` and pins the SDKs; an upgrade re-runs `tests/unit/test_llm_requests.py` (the request
-    bodies) and `-m ollama`.
+    bodies), `tests/unit/test_embedding.py` and `-m ollama` (`test_embed_ollama.py`: the vectors).
 
 ## Tech stack
 

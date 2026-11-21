@@ -1,23 +1,24 @@
-"""Embedders (design §3): one model per namespace. No fallback: a failed call raises ModelError
-after bounded retries of the *same* model (429, 5xx, transport errors), with exponential backoff."""
+"""Embedders (design §3): one model per namespace. The calls are lite-model's `embed()` (its design
+§3.2): it batches, retries the *same* model on 429 / 5xx / transport errors, checks the vectors'
+count, order and length, and reads which model answered. No fallback: a failed call raises
+ModelError. This module keeps lite-mem's own `Embedder` Protocol (rule 1) and the adapter."""
 
-import time
-from collections.abc import Callable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
-import httpx2
+import lite_model
+from lite_model import RolePolicy, RoleSpec
+from lite_model.config import resolve
 
-from lite_mem.config import OLLAMA_URL, EmbeddingConfig
-from lite_mem.errors import ConfigError, ModelError, redact
+from lite_mem.config import EmbeddingConfig
+from lite_mem.errors import ConfigError, ModelError
+from lite_mem.llm import build_model
 
-BATCH = 64
-MAX_BACKOFF_S = 8.0
+if TYPE_CHECKING:
+    import httpx2
 
-
-def _retryable(exc: Exception) -> bool:
-    if isinstance(exc, httpx2.HTTPStatusError):
-        return exc.response.status_code == 429 or exc.response.status_code >= 500
-    return isinstance(exc, httpx2.TransportError)
+ROLE = "embed"
+# Never routable (lite-model refuses it anyway): an index is bound to one model (rule 8).
+ROLES = RoleSpec({ROLE: RolePolicy(kind="embed")})
 
 
 class Embedder(Protocol):
@@ -33,25 +34,32 @@ class Embedder(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]: ...
 
 
-class _HTTPEmbedder:
-    provider: str
-    default_url: str
+class LiteModelEmbedder:
+    """lite-mem's `Embedder` over a lite-model embed role. `provider` is the lite-model backend's
+    name and `model` the configured one: together they are the index's identity (design §4),
+    fixed by the config before any call, like the model that writes a memory."""
 
     def __init__(
-        self,
-        config: EmbeddingConfig,
-        client: httpx2.Client | None = None,
-        sleep: Callable[[float], None] = time.sleep,
+        self, model: lite_model.EmbedModel, target: lite_model.Target, dim: int | None = None
     ) -> None:
-        self._config = config
-        self._base_url = (config.base_url or self.default_url).rstrip("/")
-        self._client = client or httpx2.Client(timeout=config.timeout_s)
-        self._sleep = sleep
-        self._dim: int | None = config.dim
+        self._model, self.target, self._dim = model, target, dim
+
+    @classmethod
+    def build(
+        cls, config: EmbeddingConfig, http_client: "httpx2.Client | None" = None
+    ) -> "LiteModelEmbedder":
+        """The whole config is checked before any call (an unknown backend, a missing key, a
+        backend that serves no embeddings) and refused as lite-mem's ConfigError."""
+        model = build_model(config, http_client, ROLES)
+        return cls(model, model.target(ROLE), config.dim)
+
+    @property
+    def provider(self) -> str:
+        return self.target.backend
 
     @property
     def model(self) -> str:
-        return self._config.model
+        return self.target.model
 
     @property
     def dim(self) -> int:
@@ -60,76 +68,27 @@ class _HTTPEmbedder:
         return self._dim
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        for start in range(0, len(texts), BATCH):
-            batch = texts[start : start + BATCH]
-            got = self._with_retry(batch)
-            if len(got) != len(batch):
-                raise ModelError(f"{self.model}: asked for {len(batch)} vectors, got {len(got)}")
-            vectors.extend(got)
-        if vectors and self._dim is not None and len(vectors[0]) != self._dim:
-            raise ModelError(f"{self.model}: expected {self._dim}-d vectors, got {len(vectors[0])}")
-        return vectors
-
-    def _with_retry(self, batch: list[str]) -> list[list[float]]:
-        attempts = self._config.max_retries + 1
-        for attempt in range(attempts):
-            try:
-                return self._call(batch)
-            except (httpx2.HTTPError, KeyError, TypeError, ValueError) as exc:
-                if not _retryable(exc) or attempt == attempts - 1:
-                    raise ModelError(
-                        f"embedding ({self.provider} {self.model}) failed after {attempt + 1} "
-                        f"attempt(s): {type(exc).__name__}: {redact(str(exc))}"
-                    ) from exc
-                self._sleep(min(0.5 * 2**attempt, MAX_BACKOFF_S))
-        raise AssertionError("unreachable")
-
-    def _post(self, path: str, body: dict[str, Any], headers: dict[str, str]) -> Any:
-        response = self._client.post(f"{self._base_url}{path}", json=body, headers=headers)
-        response.raise_for_status()
-        return response.json()
-
-    def _call(self, batch: list[str]) -> list[list[float]]:
-        raise NotImplementedError
+        if not texts:
+            return []
+        try:
+            reply = self._model.embed(ROLE, texts)
+        except lite_model.ModelError as exc:
+            raise ModelError(str(exc)) from exc
+        if self._dim is None:  # the first reply says it: no probe call needed after one
+            self._dim = reply.dim
+        elif reply.dim != self._dim:
+            raise ModelError(f"{self.model}: expected {self._dim}-d vectors, got {reply.dim}")
+        return reply.vectors
 
 
-class OllamaEmbedder(_HTTPEmbedder):
-    """Ollama's `/api/embed` (local, free)."""
-
-    provider = "ollama"
-    default_url = OLLAMA_URL
-
-    def _call(self, batch: list[str]) -> list[list[float]]:
-        reply = self._post("/api/embed", {"model": self.model, "input": batch}, {})
-        embeddings: list[list[float]] = reply["embeddings"]
-        return embeddings
-
-
-class OpenAIEmbedder(_HTTPEmbedder):
-    """`POST {base_url}/embeddings`: OpenAI and the services that copy its API."""
-
-    provider = "openai"
-    default_url = "https://api.openai.com/v1"
-
-    def __init__(
-        self,
-        config: EmbeddingConfig,
-        client: httpx2.Client | None = None,
-        sleep: Callable[[float], None] = time.sleep,
-    ) -> None:
-        if config.api_key is None and config.base_url is None:
-            raise ConfigError("embedding provider openai needs LITEMEM_EMBEDDING__API_KEY")
-        super().__init__(config, client, sleep)
-
-    def _call(self, batch: list[str]) -> list[list[float]]:
-        key = self._config.api_key
-        headers = {"Authorization": f"Bearer {key.get_secret_value()}"} if key else {}
-        reply = self._post("/embeddings", {"model": self.model, "input": batch}, headers)
-        return [d["embedding"] for d in sorted(reply["data"], key=lambda d: d["index"])]
+def embed_target(config: EmbeddingConfig) -> lite_model.Target:
+    """Where the embed role's calls go (backend, model, endpoint), checked as `build()` checks
+    it, without building a client."""
+    try:
+        return resolve(config, ROLES)[ROLE]
+    except lite_model.ConfigError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def build_embedder(config: EmbeddingConfig) -> Embedder:
-    if config.provider == "ollama":
-        return OllamaEmbedder(config)
-    return OpenAIEmbedder(config)
+    return LiteModelEmbedder.build(config)

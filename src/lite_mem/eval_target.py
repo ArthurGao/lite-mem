@@ -37,7 +37,7 @@ from pydantic import JsonValue
 
 from lite_mem import __version__
 from lite_mem.config import Settings
-from lite_mem.embedding import Embedder
+from lite_mem.embedding import Embedder, embed_target
 from lite_mem.engine import MAX_FACT_CHARS, MAX_MESSAGES, MemoryEngine
 from lite_mem.factory import Components, open_components, open_store
 from lite_mem.types import Message, Scope
@@ -59,12 +59,14 @@ class _LiteMemTarget:
     def __init__(self, top_k: int, follow_up: int = 0) -> None:
         self.top_k = top_k
         self.follow_up = follow_up
-        self.embedding = Settings().embedding  # what every engine of this target embeds with
+        # what every engine of this target embeds with (a bad config fails here, not mid-run)
+        self._embed = embed_target(Settings().embedding)
         self._dir: Path | None = None  # the databases; only the setup's owner (leader) has it
 
     def _embedding_identity(self) -> dict[str, Any]:
         """Every embedding setting that decides a vector (not the key, not the timeout)."""
-        return self.embedding.model_dump(mode="json", include={"provider", "model", "base_url"})
+        t = self._embed
+        return {"provider": t.backend, "model": t.model, "base_url": t.base_url}
 
     def config(self) -> dict[str, Any]:
         return {
@@ -81,7 +83,7 @@ class _LiteMemTarget:
         return {}
 
     def billing(self) -> Literal["free", "per_token", "unknown"]:
-        return "free" if self.embedding.provider == "ollama" else "per_token"
+        return "free" if self._embed.channel == "local" else "per_token"
 
     def setup_identity(self) -> dict[str, Any]:
         return {"embedding": self._embedding_identity()}
