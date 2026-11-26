@@ -90,7 +90,7 @@ uv run --extra server litemem serve   # 127.0.0.1:8710
 1. Work stage by stage (design §12). Each stage ends with every check green; every new test seen red once.
 2. Definition of done: ruff, ruff format, mypy, tests pass; acceptance items covered by tests; design updated
    if behaviour changed.
-3. Conventional Commits (`feat(store): …`). All code-facing text in English.
+3. Conventional Commits (`feat(store): …`). All code-facing text and docs (design doc, README, plans, comments) in English; Chinese only as examples or test data.
 4. **Stage close-out — after every stage's implementation passes its checks, before its commit and before the
    next stage starts:**
    1. Run `/simplify` on the stage's full diff (reuse, simplification, efficiency, altitude) and apply the fixes.

@@ -1,582 +1,582 @@
-# lite-mem 设计文档
+# lite-mem Design Document
 
-> 状态：S0–S14 已完成（2026-11-11 至 11-22；S13 = `context()`，S14 = embedding 改由 lite-model 的 `embed()` 调用）。按第 12 节的阶段实施；某个阶段改变了行为，就在同一次提交里更新本文。
+> Status: S0–S14 done (2026-11-11 to 11-22; S13 = `context()`, S14 = embeddings now come from lite-model's `embed()`). Work follows the stages in section 12; when a stage changes behaviour, update this document in the same commit.
 
-## 1. 概述
+## 1. Overview
 
-lite-mem 是一个**可读、可改、可以单独部署**的轻量记忆引擎，有两个用途：
+lite-mem is a lightweight memory engine that is **readable, changeable and deployable on its own**. It has two purposes:
 
-1. **学习**：把一段对话变成长期记忆的每一步，都是这个仓库里自己写的代码，而且能量化比较。
-   - 每一步：抽取事实、判断新旧事实的关系（新增、更新、删除、重复）、存储、混合检索、整合、遗忘。
-   - 对照对象是 mem0：同一组评测数据上，比较 lite-mem 和 mem0 2.2.1 各自的表现。
-2. **通用记忆层**：
-   - 可以作为 Python 库使用，也可以作为独立服务运行（`litemem serve`，或直接用 Docker 镜像）。
-   - 任何 agent 或应用都能直接用它记住用户。
-   - [llm-steward](https://github.com/ArthurGao/llm-steward) 是第一个使用方：llm-steward 负责治理，lite-mem 负责记忆本身。
+1. **Learning**: every step that turns a conversation into long-term memory is code written in this repo, and can be compared quantitatively.
+   - Each step: extract facts, decide how a new fact relates to old ones (add, update, delete, duplicate), store, hybrid search, consolidate, forget.
+   - The reference is mem0: on the same eval data, compare how lite-mem and mem0 2.2.1 each perform.
+2. **General memory layer**:
+   - It can be used as a Python library or run as a standalone service (`litemem serve`, or the Docker image directly).
+   - Any agent or application can use it to remember its users.
+   - [llm-steward](https://github.com/ArthurGao/llm-steward) is the first host: llm-steward does governance, lite-mem does the memory itself.
 
-和 [lite-rag](https://github.com/ArthurGao/lite-rag) 是姊妹项目。lite-rag 管文档知识（切块、检索、回答），lite-mem 管关于"人"的事实（谁、在哪、喜欢什么、变了什么）。两者的工程约定一致：同样的 Protocol 风格、PostgreSQL + pgvector、namespace 隔离、可切换的 LLM、评测驱动。
+It is a sister project to [lite-rag](https://github.com/ArthurGao/lite-rag). lite-rag handles document knowledge (chunking, retrieval, answering); lite-mem handles facts about "people" (who, where, what they like, what changed). The two share engineering conventions: the same Protocol style, PostgreSQL + pgvector, namespace isolation, a switchable LLM, eval-driven work.
 
-### 来源
+### Origin
 
-lite-mem 的第一版逻辑来自 llm-steward 已经在用的代码（2026-11-11 起，llm-steward 自己能为不会抽取的引擎抽取记忆）：
+lite-mem's first logic came from code llm-steward was already running (since 2026-11-11, llm-steward can extract memories itself for engines that cannot extract):
 
-- 抽取：`backend/src/llm_steward/pipeline/extract.py`，`prompts/extract_facts.j2`。
-- 冲突消解：`pipeline/conflict.py`，`prompts/resolve_conflict.j2`。
+- Extraction: `backend/src/llm_steward/pipeline/extract.py`, `prompts/extract_facts.j2`.
+- Conflict resolution: `pipeline/conflict.py`, `prompts/resolve_conflict.j2`.
 
-lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历史、检索、整合和遗忘，并且可以脱离 llm-steward 独立使用。
+lite-mem turns these two steps into a complete pipeline inside the engine, adds storage, history, search, consolidation and forgetting, and can be used on its own without llm-steward.
 
-### 目标
+### Goals
 
-- **默认零成本**：Ollama 提供 embedding（`bge-m3`）和 LLM（`qwen3:8b`），存储用 PostgreSQL + pgvector。
-- **库和服务用同一套核心**：`MemoryEngine` 是唯一的实现，HTTP 服务只是在它外面包一层。
-- **每个环节都可插拔**：`Extractor`、`Resolver`、`Embedder`、`Store`、`LLM` 都是 Protocol，换实现只需要改配置。
-- **记忆有历史**：每一条记忆的每一次变化（新增、更新、删除、合并）都追加进历史表，记下原因、由哪个模型做出、时间。支持"某个时间点时这个人的记忆是什么"（`as_of`）。
-- **可度量**：自带评测，覆盖抽取、更新是否正确、检索召回、问答正确率。同一组数据在不同配置下、以及和 mem0 之间并排比较。
-- **LLM 可切换**：S12 起经 lite-model：`ollama`、`openai`（任何 OpenAI 兼容端点）、`anthropic`、`gateway`（llm-gateway）、`litellm`，只改配置；没有 fallback 链。
+- **Zero cost by default**: Ollama provides the embedding (`bge-m3`) and the LLM (`qwen3:8b`); storage is PostgreSQL + pgvector.
+- **Library and service share one core**: `MemoryEngine` is the only implementation; the HTTP service is just a wrapper around it.
+- **Every part is pluggable**: `Extractor`, `Resolver`, `Embedder`, `Store` and `LLM` are all Protocols; changing an implementation only needs a config change.
+- **Memories have history**: every change to every memory (add, update, delete, merge) is appended to the history table, with the reason, the model that made it, and the time. It supports "what were this person's memories at a given point in time" (`as_of`).
+- **Measurable**: it ships its own eval, covering extraction, whether updates are correct, search recall, and question-answering accuracy. The same data is compared side by side under different configs, and against mem0.
+- **Switchable LLM**: since S12 through lite-model: `ollama`, `openai` (any OpenAI-compatible endpoint), `anthropic`, `gateway` (llm-gateway), `litellm`, by config only; there is no fallback chain.
 
-### 非目标（v1）
+### Non-goals (v1)
 
-- **不做治理**：审核、终端用户确认、可信度分级、GDPR 流程（按用户彻底删除除外，见 §4）交给 llm-steward 这类上层系统。
-- **不做文档知识库**：那是 lite-rag 的事。
-- **v1 不做知识图谱**：实体和关系图放在 S10 之后再考虑（见 §12）。
-- **不做分布式**：一个 PG 实例就够。目标规模是每个 namespace 百万级记忆、每个用户千级记忆。
+- **No governance**: review, end-user confirmation, trust grading and GDPR flows (except full deletion per user, see §4) are left to upper-layer systems such as llm-steward.
+- **No document knowledge base**: that is lite-rag's job.
+- **No knowledge graph in v1**: an entity and relation graph is considered after S10 (see §12).
+- **No distribution**: one PG instance is enough. The target scale is a million memories per namespace and a thousand memories per user.
 
-### 四类记忆分别放在哪（2026-11-27）
+### Where each of the four kinds of memory lives (2026-11-27)
 
-常见的分法是 Working / Episodic / Semantic / Procedural 四类。lite-mem 只负责其中"从对话里来的长期事实"，其余的由 workspace 里的其他模块负责：
+The common split is Working / Episodic / Semantic / Procedural. lite-mem only handles "long-term facts that come from conversations"; the rest is handled by other modules in the workspace:
 
-| 类型 | 存什么 | 例子 | 放在哪 | 理由 |
+| Type | What it stores | Example | Where it lives | Reason |
 | --- | --- | --- | --- | --- |
-| Working | 当前任务的状态 | 进行到哪一步、还有哪些待办动作 | **lite-agent**（只追加的事件日志 + 投影、session store、暂停 / 恢复）；**lite-context**（`fit()`、调用方保存的 `ContextState`、`Transcript`） | 随一次运行产生、随它结束；需要精确的顺序和重放，不需要相似度检索。lite-mem 的 `session_id` 只是 scope，用来限定长期记忆的可见范围，不保存任务状态 |
-| Episodic | 发生过的事 | 上周定下的某个架构决定 | **lite-mem** `type=episodic` | 默认按 30 天半衰期衰减（§5）；渲染时写成"那天发生的"（§5 上下文）；可以由维护任务归纳成 semantic（§6，默认关闭） |
-| Semantic | 稳定的事实 | 关于用户的："住在 Auckland"；组织的："公司架构" | 关于人的、从对话里抽出的原子事实：**lite-mem** `semantic` / `profile`（`profile` 每个 key 只有一个当前值）；成篇的组织知识：**lite-rag** / llm-steward 知识库 | 文档知识要切块、出处、引用和治理，不是一句话的事实（见上面的"不做文档知识库"） |
-| Procedural | 技能和规则 | 安全审查流程 | 一句话的偏好（"用户喜欢先写测试"）：**lite-mem** `type=procedural`；多步骤的流程：**lite-agent skills**（`SkillDir` 读 `<name>/SKILL.md`，system 里只放索引，模型按需 `load_skill`） | 流程是宿主维护、带版本的文件，不应该由模型从对话里抽取：抽错一步、或者对话里有人注入一条"规则"，都会被当成以后要照做的指令 |
+| Working | State of the current task | Which step it is at, which actions are still to do | **lite-agent** (append-only event log + projection, session store, pause / resume); **lite-context** (`fit()`, the caller-stored `ContextState`, `Transcript`) | Produced during a run and gone when it ends; needs exact order and replay, not similarity search. lite-mem's `session_id` is only a scope that limits who can see a long-term memory; it does not store task state |
+| Episodic | Things that happened | An architecture decision made last week | **lite-mem** `type=episodic` | Decays by default with a 30-day half-life (§5); rendered as "happened that day" (§5 context); a maintenance job can summarise it into semantic (§6, off by default) |
+| Semantic | Stable facts | About a user: "lives in Auckland"; about an organisation: "company structure" | Atomic facts about a person extracted from conversations: **lite-mem** `semantic` / `profile` (`profile` has one current value per key); organisational knowledge in full documents: **lite-rag** / the llm-steward knowledge base | Document knowledge needs chunking, provenance, citations and governance; it is not a one-sentence fact (see "No document knowledge base" above) |
+| Procedural | Skills and rules | A security review procedure | A one-sentence preference ("the user likes to write tests first"): **lite-mem** `type=procedural`; a multi-step procedure: **lite-agent skills** (`SkillDir` reads `<name>/SKILL.md`, the system prompt holds only an index, the model calls `load_skill` on demand) | A procedure is a versioned file maintained by the host and should not be extracted by a model from conversations: one wrong step, or someone injecting a "rule" in a conversation, would be treated as an instruction to follow from then on |
 
-所以 lite-mem 里的 `procedural` 指的是**偏好的做法**，不是流程本身。要在一个 agent 里同时用上这四类，还缺 lite-agent 的 `Memory` 协议接 lite-mem 的 adapter（lite-agent 设计 §6，目前只有测试用的 `NotesMemory`）。
+So `procedural` in lite-mem means a **preferred way of doing things**, not the procedure itself. To use all four kinds together in one agent, one piece is still missing: an adapter from lite-agent's `Memory` protocol to lite-mem (lite-agent design §6; today there is only the test-only `NotesMemory`).
 
-### 记忆的生命周期操作（2026-11-27）
+### Memory lifecycle operations (2026-11-27)
 
-按常见的六种操作对照 lite-mem 现在能做什么（细节见 §3、§4、§6）：
+The six common operations, compared with what lite-mem can do now (details in §3, §4, §6):
 
-| 操作 | 支持 | lite-mem 里是什么 |
+| Operation | Supported | What it is in lite-mem |
 | --- | --- | --- |
-| Create（存新信息） | 是 | `add(infer=true)`（抽取 + 冲突消解）、`add(infer=false)`（原样）、`remember`（调用方给一条事实） |
-| Retrieve（取相关信息） | 是 | `search`（向量 + BM25 + RRF，加权，可选 `follow_up`）、`context()`、`get`、`list_memories`、`history`、`as_of` |
-| Update（改过时信息） | 是，两种 | 措辞：`update` = CORRECT，id 不变；事实变了：SUPERSEDE，新 id，旧行关闭但保留（冲突消解和 `profile` 新值都走这个） |
-| Validate（核对是否仍然正确） | 基本没有 | 只有写入时的校验（模型提议、代码决定，抽取后补查遗漏）。写进去之后没有任何机制核对旧记忆是否仍然正确；`maintain` 的合并不是核实。人工确认属于 llm-steward 的治理层。见 §13 |
-| Expire（移除临时信息） | 是 | `expires_at`（过期立刻检索不到，`maintain` 记 EXPIRE）；遗忘（衰减到阈值以下且久未命中，默认关闭） |
-| Delete（按保留策略删除） | 部分 | `delete` 是软删除（关闭、记 DELETE，原文和历史都在）；唯一的硬删除是 `erase(user_id)`。没有按保留策略的物理清除，关闭的行一直留着。见 §13 |
+| Create (store new information) | Yes | `add(infer=true)` (extraction + conflict resolution), `add(infer=false)` (verbatim), `remember` (the caller supplies one fact) |
+| Retrieve (fetch relevant information) | Yes | `search` (vector + BM25 + RRF, weighted, optional `follow_up`), `context()`, `get`, `list_memories`, `history`, `as_of` |
+| Update (change outdated information) | Yes, two ways | Wording: `update` = CORRECT, id unchanged; the fact changed: SUPERSEDE, new id, the old row is closed but kept (conflict resolution and a new `profile` value both go this way) |
+| Validate (check it is still correct) | Mostly no | Only validation at write time (the model proposes, code decides, a check for omissions after extraction). Once written, nothing checks whether an old memory is still correct; `maintain`'s merge is not verification. Human confirmation belongs to llm-steward's governance layer. See §13 |
+| Expire (remove temporary information) | Yes | `expires_at` (not retrievable as soon as it expires, `maintain` records EXPIRE); forgetting (decayed below a threshold and not hit for a long time, off by default) |
+| Delete (delete under a retention policy) | Partly | `delete` is a soft delete (closes the row, records DELETE, the original text and history remain); the only hard delete is `erase(user_id)`. There is no physical purge by retention policy; closed rows stay forever. See §13 |
 
-## 2. 数据流
+## 2. Data flow
 
 ```
-写入（infer=true）：
-  messages → Extractor（LLM，extract_facts.j2）→ 候选事实[]
-           → 对每条事实：混合检索同一 scope 的相关记忆 top-n
-           → Resolver（LLM，resolve_conflict.j2）→ ADD / UPDATE / DELETE / NOOP（代码校验目标 id）
-           → Store（一个事务：记忆行 + 向量 + 倒排 + 历史事件）→ MemoryEvent[]
-写入（infer=false）：  每条 user 消息原样（过敏感信息筛查）→ Store；不去重（要去重靠 infer=true 或 maintain 的合并）
-写入（remember）：    调用方给的一条事实（类型、key、重要性、过期时间）→ Store
-检索：  query → Embedder → 向量 top-n ┐
-        query → 分词(jieba) → BM25 top-n ┴→ RRF → 权重（重要性 × 时间衰减 × 置信度）→ top-k MemoryHit
-维护（定时）：整合（相近记忆合并、旧的 episodic 归纳成 semantic）· 遗忘（过期、衰减到阈值以下）
+Write (infer=true):
+  messages → Extractor (LLM, extract_facts.j2) → candidate facts[]
+           → for each fact: hybrid search for related memories in the same scope, top-n
+           → Resolver (LLM, resolve_conflict.j2) → ADD / UPDATE / DELETE / NOOP (code validates the target id)
+           → Store (one transaction: memory row + vector + postings + history event) → MemoryEvent[]
+Write (infer=false):  each user message verbatim (after sensitive-information screening) → Store; no dedup (for dedup use infer=true or maintain's merge)
+Write (remember):     one fact given by the caller (type, key, importance, expiry) → Store
+Search:  query → Embedder → vector top-n ┐
+         query → tokenise (jieba) → BM25 top-n ┴→ RRF → weights (importance × time decay × confidence) → top-k MemoryHit
+Maintain (scheduled): consolidate (merge similar memories, summarise old episodic into semantic) · forget (expired, decayed below the threshold)
 ```
 
-## 3. 组件与接口
+## 3. Components and interfaces
 
-所有接口都是 `typing.Protocol`；测试用 fake 实现，不依赖网络和模型。
+All interfaces are `typing.Protocol`; tests use fake implementations and do not depend on the network or models.
 
-| 接口 | 方法 | 默认实现 | 其他实现 |
+| Interface | Methods | Default implementation | Other implementations |
 | --- | --- | --- | --- |
-| `Extractor` | `extract(messages) -> Extraction`（事实 + 出处） | `LlmExtractor`（`extract_facts.j2`，结构化输出） | `testing.RuleExtractor`（测试：每条 user 消息一条事实） |
-| `Resolver` | `resolve(new, related) -> Resolution`（含 `remainder`） | `LlmResolver`（`resolve_conflict.j2`） | `AddOnlyResolver`（只新增，用来和 mem0 2.2.1 的行为对照） |
-| `Consolidator` | `merge(memories) -> MergeDecision`，`summarise(episodes) -> Summary[]` | `LlmConsolidator`（`consolidate_merge.j2`、`consolidate_summarise.j2`） | — |
-| `Embedder` | `embed(texts) -> vectors`，`dim`，`model` | Ollama `bge-m3` | OpenAI 兼容 |
-| `Store` | 见 §4 | `PgStore` | `SqliteStore`（sqlite-vec + 自己的倒排，S7b，嵌入式） |
-| 上下文（S13，不是 Protocol） | `MemoryEngine.context(query, scope, …, token_budget, language) -> MemoryContext(text, hits)` | `lite_mem.context`（`context.j2`，不调模型） | — |
-| `LLM` | `structured(role, system, payload, schema) -> (结果, 出处)` | `LiteModelLLM`：接到 lite-model（S12 起），任何 OpenAI 兼容端点（含 Ollama `/v1`）、Anthropic（extra）、llm-gateway、LiteLLM | `testing.FakeLLM`（基于 lite-model 的 `FakeModel`） |
+| `Extractor` | `extract(messages) -> Extraction` (facts + provenance) | `LlmExtractor` (`extract_facts.j2`, structured output) | `testing.RuleExtractor` (for tests: one fact per user message) |
+| `Resolver` | `resolve(new, related) -> Resolution` (includes `remainder`) | `LlmResolver` (`resolve_conflict.j2`) | `AddOnlyResolver` (add only, to compare with mem0 2.2.1's behaviour) |
+| `Consolidator` | `merge(memories) -> MergeDecision`, `summarise(episodes) -> Summary[]` | `LlmConsolidator` (`consolidate_merge.j2`, `consolidate_summarise.j2`) | — |
+| `Embedder` | `embed(texts) -> vectors`, `dim`, `model` | Ollama `bge-m3` | OpenAI-compatible |
+| `Store` | See §4 | `PgStore` | `SqliteStore` (sqlite-vec + its own inverted index, S7b, embedded) |
+| Context (S13, not a Protocol) | `MemoryEngine.context(query, scope, …, token_budget, language) -> MemoryContext(text, hits)` | `lite_mem.context` (`context.j2`, no model call) | — |
+| `LLM` | `structured(role, system, payload, schema) -> (result, provenance)` | `LiteModelLLM`: connects to lite-model (since S12), any OpenAI-compatible endpoint (including Ollama `/v1`), Anthropic (extra), llm-gateway, LiteLLM | `testing.FakeLLM` (based on lite-model's `FakeModel`) |
 
-- **角色（role）**：`extract`、`resolve`、`consolidate`。配置把角色映射到 backend 和模型；任何一次 LLM 调用都只说角色，不写模型名。
-  S12 起模型调用由 lite-model 完成（它的设计 §12）：配置是 lite-model 的 `ModelsConfig`（`LITEMEM_LLM__BACKEND`、`__MODEL`、
-  `__ROLES`、`__BACKENDS`、`__REASONING_EFFORT`…），启动时（`open_components`）整体校验；没有 fallback，重试只在同一个模型上。
-  三个角色都不可路由（LiteLLM 的路由别名在启动时被拒绝）：路由器挑的模型写下的记忆没法和配置的模型对照。
-- **出处**：每条由模型产生的记忆或变更，都带 `provider:model`（写进历史事件）：provider 是 lite-model 的 backend 名
-  （默认 `openai`，所以和 S12 之前的记录格式相同），model 是响应里说的、实际回答的模型。
-- **代码决定**（同 llm-steward 的做法）：
-  - 模型给出的 UPDATE/DELETE 目标不在候选里，不执行，按 ADD 处理；
-  - 抽取结果要去空白、去重，并截断条数和长度。
+- **Role**: `extract`, `resolve`, `consolidate`. Config maps a role to a backend and a model; every LLM call names only the role, never a model name.
+  Since S12 model calls are made by lite-model (its design §12): the config is lite-model's `ModelsConfig` (`LITEMEM_LLM__BACKEND`, `__MODEL`,
+  `__ROLES`, `__BACKENDS`, `__REASONING_EFFORT`…), validated as a whole at startup (`open_components`); there is no fallback, and retries stay on the same model.
+  None of the three roles may be routed (LiteLLM routing aliases are rejected at startup): a memory written by a model the router picked cannot be compared with the configured model.
+- **Provenance**: every memory or change produced by a model carries `provider:model` (written into the history event): provider is lite-model's backend name
+  (default `openai`, so the format is the same as records from before S12), and model is the model the response says actually answered.
+- **Code decides** (same approach as llm-steward):
+  - If the target of a model's UPDATE/DELETE is not among the candidates, it is not executed and is handled as ADD;
+  - Extraction results are trimmed of whitespace, de-duplicated, and capped in count and length.
 
-### 记忆的形状
+### Shape of a memory
 
-| 字段 | 说明 |
+| Field | Description |
 | --- | --- |
-| `id` | UUIDv7，由 lite-mem 生成 |
-| `namespace` | 必填，隔离单位（见 §4） |
-| `user_id` / `agent_id` / `session_id` | scope；都为空表示 namespace 内共享 |
-| `content` | 一条原子事实，短句 |
-| `type` | `semantic`（事实）、`episodic`（发生过的事）、`procedural`（偏好的做法）、`profile`（带 `key` 的当前值） |
-| `key` | 只用于 `profile`：同一 scope 下一个 key 只有一个当前值，新值取代旧值 |
-| `importance`、`confidence` | 0–1；抽取时由模型给出初值，代码夹到范围内 |
-| `valid_from` / `valid_to`、`superseded_by` | 生效区间；更新时旧记忆写 `valid_to` 和 `superseded_by`，**不删除** |
-| `source` | 来源（调用方给的 episode id、消息 id），可选 |
-| `metadata` | 调用方的键值，可以过滤（等值） |
-| `access_count`、`last_accessed_at` | 检索命中时更新，用于衰减和遗忘 |
+| `id` | UUIDv7, generated by lite-mem |
+| `namespace` | Required, the unit of isolation (see §4) |
+| `user_id` / `agent_id` / `session_id` | scope; all empty means shared within the namespace |
+| `content` | One atomic fact, a short sentence |
+| `type` | `semantic` (fact), `episodic` (something that happened), `procedural` (a preferred way of doing things), `profile` (a current value with a `key`) |
+| `key` | Only for `profile`: under one scope a key has only one current value, and a new value replaces the old one |
+| `importance`, `confidence` | 0–1; the model gives the initial value at extraction, and code clamps it into range |
+| `valid_from` / `valid_to`, `superseded_by` | Validity interval; on update the old memory gets `valid_to` and `superseded_by` and is **not deleted** |
+| `source` | Origin (an episode id or message id given by the caller), optional |
+| `metadata` | The caller's key-value pairs, can be filtered on (equality) |
+| `access_count`, `last_accessed_at` | Updated on a search hit, used for decay and forgetting |
 
-历史表 `memory_events` 只追加：`(memory_id, op, before, after, reason, produced_by, at)`。op 有：
+The history table `memory_events` is append-only: `(memory_id, op, before, after, reason, produced_by, at)`. The ops are:
 
-- `ADD`：新记忆；
-- `CORRECT`：原地更正措辞，id 不变（同一事实写得更好）；
-- `SUPERSEDE`：事实变了，新 id 取代旧行，旧行写 `valid_to` 和 `superseded_by`（profile key 的新值、冲突消解的 UPDATE 决定都落成这个）；
-- `DELETE`：退役；
-- `MERGE`：合并（S7）；
-- `EXPIRE`：过期（S7）。
+- `ADD`: a new memory;
+- `CORRECT`: fix the wording in place, id unchanged (the same fact, written better);
+- `SUPERSEDE`: the fact changed, a new id replaces the old row, and the old row gets `valid_to` and `superseded_by` (a new value for a profile key, and an UPDATE decision from conflict resolution, both end up as this);
+- `DELETE`: retire;
+- `MERGE`: merge (S7);
+- `EXPIRE`: expire (S7).
 
-所有写操作都经过引擎的同一个入口 `_apply`（新增、取代、更正、退役），都记 `produced_by`；整批在一个事务里。
+All write operations go through the same engine entry point `_apply` (add, supersede, correct, retire), all record `produced_by`, and a whole batch runs in one transaction.
 
-## 4. 存储与 id
+## 4. Storage and ids
 
-### PostgreSQL 后端（默认）
+### PostgreSQL backend (default)
 
-- 自己的 schema `lite_mem`（和 lite-rag 的 `lite_rag`、llm-steward 的 `steward` 可以共用一个 PG 实例，各用各的 schema）。
-- 表：
-  - `memories`；
-  - `memory_vectors_<dim>`：一种维度一张表（没有 ANN 索引：检索在 scope 内精确算，见 §5；S8 起不再建 HNSW，迁移 0004 删掉旧的）；
-  - `memory_postings`：自写 BM25 的倒排，jieba 分词；
-  - `memory_events`；
-  - `namespaces`：记录 embedding 模型、维度和分词器，打开时不一致就拒绝；
-  - `idempotency`：幂等键和它第一次写入的结果。
-  - HTTP 服务的 API key 不在库里：在配置里（`LITEMEM_SERVER__API_KEYS`，只存 sha256，见 §7）。
-- **一次写入一个事务**：记忆行、向量、倒排、历史事件同时成功或同时回滚。这是 mem0 2.2.1 没有的保证（它的历史在单独的 SQLite 文件里）。
-- 迁移用自己的 `litemem migrate`，和 lite-rag 的做法一致。
+- Its own schema `lite_mem` (it can share one PG instance with lite-rag's `lite_rag` and llm-steward's `steward`, each using its own schema).
+- Tables:
+  - `memories`;
+  - `memory_vectors_<dim>`: one table per dimension (no ANN index: search computes exactly inside the scope, see §5; since S8 no HNSW is built, and migration 0004 drops the old one);
+  - `memory_postings`: the inverted index for the self-written BM25, tokenised with jieba;
+  - `memory_events`;
+  - `namespaces`: records the embedding model, dimension and tokenizer, and refuses to open on a mismatch;
+  - `idempotency`: the idempotency key and the result of its first write.
+  - The HTTP service's API keys are not in the database: they are in config (`LITEMEM_SERVER__API_KEYS`, only the sha256 is stored, see §7).
+- **One write is one transaction**: the memory row, vector, postings and history event all succeed or all roll back. mem0 2.2.1 does not give this guarantee (its history is in a separate SQLite file).
+- Migrations use its own `litemem migrate`, the same way as lite-rag.
 
-### SQLite 后端（S7b，可选，extra `sqlite`）
+### SQLite backend (S7b, optional, extra `sqlite`)
 
-- `LITEMEM_DATABASE_URL=sqlite:///<文件>`：一个文件、不要服务，适合单机和嵌入式使用。打开时建表（`PRAGMA user_version` 记版本），`litemem migrate` 也可以。
-- 表和 PG 一样（`memories`、`memory_events`、`memory_postings`、`namespaces`、`idempotency`），向量放一张 `memory_vectors`（float32 blob）。约束也一样：profile 当前值的部分唯一索引、`valid_to >= valid_from`、`superseded_by` 外键延迟到提交时检查。
-- 向量：sqlite-vec 的 `vec_distance_cosine`，在过滤后的行里精确排序（和 PG 一样：先过滤再算距离；`vec0` 虚拟表先取最近的 k 条再过滤，会漏掉本 scope 的记忆，llm-steward 的 native store 就是这样）。
-- 关键词：不用 FTS5——它的 bm25 是另一套公式，两个 store 的排序会不同。用和 PG 一样的倒排表，分数用 `keyword.py` 的函数算，两个 store 排序相同。
-- 事务：每个线程一个连接，WAL，所有事务都 `BEGIN IMMEDIATE`，写者由数据库串行；PG 的行锁和 advisory lock 在这里不需要。读也要等写者（`busy_timeout` 默认 10 秒）：单机够用，并发写多就用 PG。
-- 时间存成固定宽度的 UTC ISO 文本（文本序就是时间序）；不带时区的时间在引擎入口就被拒绝。metadata 过滤和 PG 一样是 jsonb 包含（`@>` 的规则：嵌套对象只要包含、数组只要有、`true` 不等于 `1`），用一个注册进 SQLite 的函数实现。
+- `LITEMEM_DATABASE_URL=sqlite:///<file>`: one file, no server, suited to single-machine and embedded use. Tables are created on open (`PRAGMA user_version` records the version); `litemem migrate` works too.
+- The tables are the same as in PG (`memories`, `memory_events`, `memory_postings`, `namespaces`, `idempotency`), with the vectors in one `memory_vectors` table (float32 blob). The constraints are the same too: the partial unique index for a profile's current value, `valid_to >= valid_from`, and the `superseded_by` foreign key checked deferred until commit.
+- Vectors: sqlite-vec's `vec_distance_cosine`, sorted exactly among the filtered rows (same as PG: filter first, then compute distance; a `vec0` virtual table takes the nearest k rows first and then filters, which misses this scope's memories, which is what llm-steward's native store does).
+- Keywords: FTS5 is not used, because its bm25 is a different formula and the two stores would rank differently. It uses the same inverted-index table as PG, and the score is computed with the functions in `keyword.py`, so both stores rank the same.
+- Transactions: one connection per thread, WAL, every transaction is `BEGIN IMMEDIATE`, and writers are serialised by the database; PG's row locks and advisory locks are not needed here. Reads also wait for the writer (`busy_timeout` defaults to 10 seconds): enough for a single machine; use PG when there are many concurrent writes.
+- Times are stored as fixed-width UTC ISO text (text order is time order); a time without a timezone is rejected at the engine entry. Metadata filtering is jsonb containment, as in PG (the rules of `@>`: a nested object only needs to be contained, an array only needs to have the element, `true` does not equal `1`), implemented with a function registered into SQLite.
 
-### Namespace（强制）
+### Namespace (mandatory)
 
-- 引擎绑定一个 namespace（如 `app` 或 `steward/<namespace_id>`）。所有读写都带着它，没有能跨 namespace 的 API。
-- 按用户彻底删除：`erase(user_id)` 删掉这个用户的全部记忆、向量、倒排和历史。这是唯一的硬删除，为 GDPR 类请求准备。
+- An engine is bound to one namespace (such as `app` or `steward/<namespace_id>`). Every read and write carries it, and no API can cross namespaces.
+- Full deletion per user: `erase(user_id)` deletes all of that user's memories, vectors, postings and history. This is the only hard delete, provided for GDPR-type requests.
 
-### 通用规则
+### General rules
 
-- **只失效、不删除**：取代、删除、合并、过期都只写 `valid_to` 和历史，`as_of` 能回看。
-- **更正对 `as_of` 追溯生效**：`CORRECT` 改的是同一事实的措辞，`as_of` 看到的是更正后的文字；改前的文字在历史里。事实本身变了要用取代，不要用更正。
-- **索引绑定模型**：换 embedding 模型要新建 namespace，把记忆重新写进去（没有 `litemem reindex` 命令：v1 的做法是新 namespace 加重写），不能就地替换。
-- **上限**（库、CLI、HTTP 一致，S8）：一次写入最多 200 条消息、每条最多 2 万字；`list_memories` 可分页（`limit` 最多 1 万，HTTP 默认 1000）；`top_k` 最多 100；一个服务进程最多打开 `LITEMEM_SERVER__MAX_NAMESPACES`（默认 1000）个 namespace。
-- **敏感信息**：内容、metadata 里的文字值、事件的理由都过同一套筛查（`lite_mem.sensitive`）。
-- **幂等**：调用方可以带 `idempotency_key`（例如 episode id）。同一个 key 的写入只执行一次，重试会返回第一次的结果。mem0 2.2.1 没有这个保证，llm-steward 需要它。
+- **Invalidate, never delete**: supersede, delete, merge and expire only write `valid_to` and history, and `as_of` can look back.
+- **A correction applies retroactively to `as_of`**: `CORRECT` changes the wording of the same fact, so `as_of` sees the corrected text; the text before the change is in the history. When the fact itself changed, use supersede, not correct.
+- **An index is bound to its model**: changing the embedding model means creating a new namespace and writing the memories into it again (there is no `litemem reindex` command: the v1 way is a new namespace plus a rewrite); it cannot be replaced in place.
+- **Limits** (the same in library, CLI and HTTP, S8): at most 200 messages per write and at most 20,000 characters per message; `list_memories` can be paged (`limit` at most 10,000, HTTP default 1000); `top_k` at most 100; one service process opens at most `LITEMEM_SERVER__MAX_NAMESPACES` (default 1000) namespaces.
+- **Sensitive information**: content, text values in metadata, and event reasons all go through the same screening (`lite_mem.sensitive`).
+- **Idempotency**: the caller can pass an `idempotency_key` (for example an episode id). A write with the same key runs only once, and a retry returns the first result. mem0 2.2.1 does not give this guarantee, and llm-steward needs it.
 
-## 5. 检索
+## 5. Search
 
-- 混合检索：向量 top-n 和 BM25 top-n 用 RRF 融合，再乘以下几个权重：
-  - 重要性：`1 + boost × importance`；
-  - 时间衰减：按类型的半衰期，episodic 默认 30 天，其余不衰减；
-  - 置信度：低于 0.5 的乘以 0.8。
-- 过滤：scope（自己的，加上共享的：user、agent、session 都为空的才是共享）、类型、metadata（jsonb 包含）、`as_of`（某个时刻生效的版本）。
-- 结果 `MemoryHit(memory, score, relevance, via)`：`memory` 是整条记忆；`relevance` 是融合后的相关度，`score` 再乘了权重。分数只在 lite-mem 内部可比；`via` 只有二轮检索的命中才有（见下）。
-- 冲突消解用的"相关记忆"也走同一条检索，只是限定在**完全相同的 scope**内，并且只取当前生效的记忆。过滤条件有两种模式：`visible`（这个 scope 能看到的：自己的、没指定 session 时含它的所有 session、可选含共享）和 `exact`（恰好这个 scope，session 也要一致，不含共享）。
-- 向量检索在过滤后的行上精确计算距离（先物化该 scope 可见的行，再算余弦），返回 (id, 相似度)；按 scope 检索时一个 scope 只有千级记忆，精确算很便宜，也不会因为别的 scope 有更近的向量而漏召回。ANN 索引（HNSW）留给以后不按 scope 的查询，到时再建。
-- **二轮检索**（S10，`follow_up=N`，默认 0 即关闭，最多 3、不超过 `top_k`）：给要两条记忆才答得出的问题（"我姐姐在哪工作"：先找到 "Lily is my sister"，再找 Lily 的事）。第一轮前 N 条命中各取**问题里没有的词**（同一个分词器），一次批量 embedding，在同一套过滤条件下各检索一次，每条最多取 2 条新命中（`FOLLOW_UP_HITS`）；结果是第一轮的前一半（向上取整）、再接二轮的命中（`via` = 经由哪一条）、再用第一轮剩下的补满 `top_k`。两轮的分数不可比，顺序就是排名。命中都记一次访问。模型调用在事务外，所以开了二轮检索的一次搜索是两个事务：第二个事务里用问题的向量把第一轮再排一次，返回的全部来自同一个快照（中间被取代、删除的不会返回）。参数范围由引擎检查，库、CLI、HTTP 一致（HTTP 和 `top_k` 一样都是 400）。为什么不做图谱、参数怎么来的：见 §12 的 S10 记录。
-- **给提示词用的上下文**（S13，`context`）：就是一次 `search` 的结果，按顺序渲染成可以直接放进提示词的文本，库、CLI（`litemem context`）、HTTP 都有，单独用 lite-mem 时不用自己拼。每条一行（内容里的换行和多余空白合成一个空格：存进来的文字开不了新标题、也伪造不了另一条），带引用 id 和日期（`valid_from` 的 UTC 日期；episodic 是"那天发生的"：`(on 2026-11-13)` / `（2026-11-13）`，其他类型是"那天记下的"：`(noted 2026-11-18)` / `（2026-11-18 记）`）；标题说明这些是笔记、不是指令，因为记忆内容来自用户说过的话。语言跟随查询（含汉字为中文），可以指定（auto / en / zh，其他值报 `InvalidRequest`）。`token_budget`：每加一条就按渲染出来的整段文本估算（标题只算一次），放不下的跳过、下一条放得下的顶上，所以文本不会超预算。只有放进文本的记忆才算一次访问（`search` 把返回的都算访问；被预算挤掉的模型没看到，不能抬高整合和遗忘读的访问次数）。措辞和 llm-steward 的 `format=context` 相同（它把记忆和知识库一起渲染，用自己的模板）。
-- BM25 的契约：两个 store 都和 `keyword.py` 的公式逐项相等（PgStore 在 SQL 里算，SqliteStore 用 `keyword.py` 的函数在 Python 里算），同一套测试在两个 store 上都查。
+- Hybrid search: the vector top-n and the BM25 top-n are fused with RRF, then multiplied by the following weights:
+  - Importance: `1 + boost × importance`;
+  - Time decay: a half-life by type, 30 days by default for episodic, no decay for the others;
+  - Confidence: below 0.5 is multiplied by 0.8.
+- Filters: scope (its own, plus shared: only memories whose user, agent and session are all empty are shared), type, metadata (jsonb containment), `as_of` (the version in force at a given moment).
+- The result is `MemoryHit(memory, score, relevance, via)`: `memory` is the whole memory; `relevance` is the fused relevance, and `score` is that multiplied by the weights. Scores are comparable only within lite-mem; `via` is set only for hits from the second round (see below).
+- The "related memories" used by conflict resolution go through the same search, only restricted to the **exact same scope** and only to currently valid memories. The filter has two modes: `visible` (what this scope can see: its own, all of its sessions when no session is given, optionally including shared) and `exact` (exactly this scope, the session must match too, no shared).
+- Vector search computes the distance exactly over the filtered rows (first materialise the rows visible to that scope, then compute cosine) and returns (id, similarity); when searching by scope a scope only has a thousand or so memories, so the exact computation is cheap, and a nearer vector in another scope cannot cause missed recall. The ANN index (HNSW) is kept for later queries that are not by scope, and will be built then.
+- **Second-round search** (S10, `follow_up=N`, default 0 meaning off, at most 3 and not above `top_k`): for questions that need two memories to answer ("where does my sister work": first find "Lily is my sister", then find the facts about Lily). For each of the first round's top N hits, take the **words not in the question** (same tokenizer), embed them in one batch, and search once each under the same filters, taking at most 2 new hits per hit (`FOLLOW_UP_HITS`); the result is the first half of the first round (rounded up), then the second-round hits (`via` = through which hit), then filled up to `top_k` with what is left of the first round. Scores from the two rounds are not comparable, so the order is the ranking. Every hit counts as one access. Model calls are outside the transaction, so one search with the second round on is two transactions: in the second transaction the first round is re-ranked with the question's vector, and everything returned comes from the same snapshot (anything superseded or deleted in between is not returned). The parameter range is checked by the engine, the same in library, CLI and HTTP (in HTTP it is a 400, like `top_k`). Why there is no graph, and where the parameters come from: see the S10 record in §12.
+- **Context for prompts** (S13, `context`): it is just the result of one `search`, rendered in order into text that can go straight into a prompt; library, CLI (`litemem context`) and HTTP all have it, so a user of lite-mem alone does not have to assemble it. One line per memory (newlines and extra whitespace in the content are collapsed into one space: stored text cannot open a new heading or forge another entry), with the citation id and the date (the UTC date of `valid_from`; for episodic it is "happened that day": `(on 2026-11-13)` / `（2026-11-13）`, for other types it is "noted that day": `(noted 2026-11-18)` / `（2026-11-18 记）`); the heading says these are notes, not instructions, because the memory content comes from what the user said. The language follows the query (Chinese if it contains Han characters) and can be set (auto / en / zh, any other value raises `InvalidRequest`). `token_budget`: each time an entry is added the estimate is taken over the whole rendered text (the heading counts only once); an entry that does not fit is skipped and the next one that fits takes its place, so the text never exceeds the budget. Only memories that went into the text count as an access (`search` counts everything it returns as an access; what the budget pushed out was not seen by the model and must not raise the access counts that consolidation and forgetting read). The wording is the same as llm-steward's `format=context` (which renders memories and the knowledge base together, with its own template).
+- BM25 contract: both stores equal the formula in `keyword.py` term by term (PgStore computes it in SQL, SqliteStore computes it in Python with the functions in `keyword.py`), and the same tests check both stores.
 
-## 6. 整合与遗忘（S7）
+## 6. Consolidation and forgetting (S7)
 
-- **"当前"只有一个定义**：没有被关闭（`valid_to` 为空），并且没过 `expires_at`（`Memory.holds_at`；读查询在 SQL 里用同一条规则）。过了期的记忆立刻检索不到，`as_of` 仍能看到它到期之前的样子；`maintain` 再把它正式关闭，`valid_to` 取到期的时间，历史记 EXPIRE。写入时 `expires_at` 已过的，直接拒绝。
-- **合并**：同一 scope、同一类型（`semantic`、`procedural`；`profile` 永不合并，新值取代旧值）内，向量相似度不低于阈值的记忆分成组，由 `consolidate` 角色判断是不是**同一个事实**（换了说法，或一条更精确），是就写成一句；说的是不同的事（两个城市、一个变化），就不合并。合并结果是一条新记忆，来源各写 `superseded_by`，每一行都记 MERGE。新记忆的字段由一条规则决定（`_inherit`）：最早那条的类型和 metadata、最高的重要性和置信度、所有来源都会过期时才过期（取最晚的）。合并结果和其他派生事实一样过敏感信息筛查。阈值默认 0.92，S7 用 eval 定（见 §12）。
-- **归纳**（默认关闭）：一个 scope 里早于 N 天的 episodic 记忆，由 `consolidate` 角色归纳成 semantic 事实，每个事实列出它总结的 episode（只能是给它的、每个只用一次），被总结的 episode 以 MERGE 关闭。
-- **遗忘**（默认关闭）：会衰减的类型（配了半衰期的，默认 episodic）里，搜索权重低于阈值、并且 N 天没被检索命中的记忆，以 EXPIRE 关闭。
-- **写入时的复合事实**：消解器判 UPDATE / DELETE 时，如果旧记忆说了几件事、只变了一部分，给出 `remainder`（仍然成立的部分），代码把它另存一条（S6 验收发现："住 Wellington，是护士" 被搬家取代，"是护士"跟着丢了）。代码只在旧记忆是复合句（有 "and"、逗号、分号、"和"、"并且" 等连接）时接受 remainder：只说一件事的记忆被改掉，就没有剩下的部分（2026-11-20：qwen3 会把它截短后当 remainder，"在咖啡店兼职做咖啡师" 辞职后留下 "兼职做咖啡师"）。remainder 也不能重复同一批已加的事实；同一批后面的事实如果 remainder 已经说了，就不再写。
-- 这些都是离线任务：`litemem maintain`、`POST /v1/maintain`，或调用方自己的定时任务；不在写入路径上。模型调用在事务外，写入时在锁下复查（来源仍然有效、仍在同一个 scope），变了的组跳过，下次再看。`maintain` 和 `add` 一样返回事件。
+- **"Current" has only one definition**: not closed (`valid_to` is empty) and not past `expires_at` (`Memory.holds_at`; read queries use the same rule in SQL). An expired memory is not retrievable immediately, and `as_of` can still see it as it was before it expired; `maintain` then closes it formally, with `valid_to` set to the expiry time and EXPIRE recorded in the history. A write whose `expires_at` has already passed is rejected.
+- **Merge**: within the same scope and the same type (`semantic`, `procedural`; `profile` is never merged, a new value replaces the old one), memories whose vector similarity is at or above the threshold are grouped, and the `consolidate` role decides whether they are the **same fact** (reworded, or one more precise); if so it is written as one sentence; if they say different things (two cities, a change), they are not merged. The merge result is one new memory, each source gets `superseded_by`, and every row records MERGE. The new memory's fields are decided by one rule (`_inherit`): the type and metadata of the earliest one, the highest importance and confidence, and it expires only when all sources have expired (taking the latest). The merge result goes through the same sensitive-information screening as other derived facts. The threshold defaults to 0.92, set by an eval in S7 (see §12).
+- **Summarising** (off by default): episodic memories older than N days in a scope are summarised by the `consolidate` role into semantic facts; each fact lists the episodes it summarises (only ones it was given, each used once), and the summarised episodes are closed with MERGE.
+- **Forgetting** (off by default): among the types that decay (those with a half-life configured, episodic by default), memories whose search weight is below the threshold and that have not been hit by a search for N days are closed with EXPIRE.
+- **Compound facts at write time**: when the resolver decides UPDATE / DELETE and the old memory said several things with only part of it changed, it gives a `remainder` (the part that still holds), and the code saves that as a separate memory (found in S6 acceptance: "住 Wellington，是护士" (lives in Wellington, is a nurse) was superseded by a move, and "是护士" (is a nurse) was lost with it). The code accepts a remainder only when the old memory is a compound sentence (it has a connector such as "and", a comma, a semicolon, "和", "并且"): a memory that says only one thing, when changed, has no remaining part (2026-11-20: qwen3 would cut it short and pass it off as a remainder; after quitting "在咖啡店兼职做咖啡师" (works part-time as a barista in a café), "兼职做咖啡师" (works part-time as a barista) was left). A remainder also may not repeat facts already added in the same batch; if a later fact in the same batch is already said by the remainder, it is not written again.
+- These are all offline jobs: `litemem maintain`, `POST /v1/maintain`, or the caller's own scheduled job; they are not on the write path. Model calls are outside the transaction, and at write time the code re-checks under the lock (the sources are still valid and still in the same scope); a group that changed is skipped and looked at again next time. `maintain` returns events, like `add`.
 
-## 7. HTTP 服务（`litemem serve`）
+## 7. HTTP service (`litemem serve`)
 
-- FastAPI（extra `[server]`），默认端口 `127.0.0.1:8710`。
-- API key 鉴权，key 按 glob 限定 namespace。没有 key 时，服务只能绑定回环地址。
-- 错误用 Problem Details；写接口支持 `Idempotency-Key`。
-- 路由：
-  - `POST /v1/memories:add`（messages + scope + infer，`Idempotency-Key`）；
-  - `POST /v1/memories`（`remember`：一条事实原样写入，`Idempotency-Key`；S8，给 S9 推送治理过的记忆用）；
-  - `POST /v1/memories:search`；
-  - `POST /v1/memories:context`（S13：search 的参数加 `token_budget`、`language`，返回 `{text, hits}`）；
-  - `GET|PATCH|DELETE /v1/memories/{id}`；
-  - `GET /v1/memories/{id}/history`；
-  - `GET /v1/memories?scope…&limit&offset`（分页）；
-  - `POST /v1/maintain[?user_id]`（整合与遗忘，返回事件）；
-  - `DELETE /v1/users/{user_id}`（彻底删除）；
-  - `GET /health`（只查数据库）、`GET /health?deep=true`（再做一次 embedding）。
-- Dockerfile 和 compose 示例（服务 + PG，Ollama 在宿主机上）；CI 构建镜像（llm-steward 的教训：不在 CI 里构建，镜像坏了也没人发现）。
+- FastAPI (extra `[server]`), default port `127.0.0.1:8710`.
+- API key authentication; a key is limited to namespaces by glob. Without keys, the service can only bind to a loopback address.
+- Errors use Problem Details; write endpoints support `Idempotency-Key`.
+- Routes:
+  - `POST /v1/memories:add` (messages + scope + infer, `Idempotency-Key`);
+  - `POST /v1/memories` (`remember`: write one fact verbatim, `Idempotency-Key`; S8, for S9 to push governed memories);
+  - `POST /v1/memories:search`;
+  - `POST /v1/memories:context` (S13: search's parameters plus `token_budget` and `language`, returns `{text, hits}`);
+  - `GET|PATCH|DELETE /v1/memories/{id}`;
+  - `GET /v1/memories/{id}/history`;
+  - `GET /v1/memories?scope…&limit&offset` (paged);
+  - `POST /v1/maintain[?user_id]` (consolidation and forgetting, returns events);
+  - `DELETE /v1/users/{user_id}` (full deletion);
+  - `GET /health` (checks only the database), `GET /health?deep=true` (also makes one embedding call).
+- A Dockerfile and a compose example (service + PG, with Ollama on the host); CI builds the image (a lesson from llm-steward: if the image is not built in CI, nobody notices when it breaks).
 
-## 8. 评测
+## 8. Eval
 
-- **数据**：自己写的合成对话集，中英混合。
-  - 一个虚构用户的若干轮会话，里面包含：新事实、改变的事实（搬家、换工作）、重复说的事实、闲聊、敏感信息（不该被记住）。
-  - 每段会话后标注"此时应该记住的事实集合"和若干问题（及标准答案）。
-  - 语料自己写，可以公开。
-- **指标**：
-  - 抽取的准确率和召回率（与标注事实比较，用 LLM 评判加人工抽查）；
-  - 更新是否正确（该取代的取代了、该保留的保留了）；
-  - 检索 recall@k；
-  - 问答正确率；
-  - 每次写入的模型调用次数和延迟。
-- **对照**：
-  - lite-mem 的各种配置：只新增 vs 消解冲突、不同的抽取提示词、不同模型；
-  - mem0 2.2.1（同一份数据，同一个本地模型）。
-- `litemem eval` 输出对比表。真实模型只用本地 Ollama（`-m ollama`，可选开启），付费 API 只在 owner 提供 key 并同意后才跑。结果记进 KB。
-- 以后可以加 LoCoMo 这类公开基准（需要真实模型，先问 owner）。
-- **S11 起两跳评测和 LongMemEval 跑在 lite-eval 上**（Target 在 `src/lite_mem/eval_target.py`）：`uv run lite-eval run eval/lite-eval/suites/multihop.yaml`；`uv run python eval/longmemeval.py s|m|oracle`。LongMemEval 只测检索层（每题的用户发言写成记忆、按 session 算 recall@k / hit@k）；答案正确率要模型评审，等 lite-eval E5。官方数据每次下载到临时目录、跑完删除，不留在本机，也不进仓库（owner 2026-11-14 定）。`litemem eval`（S5 的合成对话集、mem0 对照）暂不迁移。
+- **Data**: a synthetic conversation set written in this repo, mixed Chinese and English.
+  - Several rounds of sessions of one fictional user, containing: new facts, changed facts (moving, changing jobs), facts said again, small talk, and sensitive information (which should not be remembered).
+  - After each session, annotate "the set of facts that should be remembered at this point" and some questions (with golden answers).
+  - The corpus is written in this repo and can be made public.
+- **Metrics**:
+  - Extraction precision and recall (compared with the annotated facts, using an LLM judge plus manual spot checks);
+  - Whether updates are correct (what should be superseded was, what should be kept was);
+  - Search recall@k;
+  - Question-answering accuracy;
+  - Model calls and latency per write.
+- **Comparison**:
+  - Various lite-mem configs: add only vs conflict resolution, different extraction prompts, different models;
+  - mem0 2.2.1 (the same data, the same local model).
+- `litemem eval` outputs a comparison table. Real models are only the local Ollama (`-m ollama`, opt-in); paid APIs run only after the owner supplies a key and agrees. Results go into the KB.
+- Public benchmarks such as LoCoMo can be added later (they need real models, ask the owner first).
+- **Since S11 the two-hop eval and LongMemEval run on lite-eval** (the Target is in `src/lite_mem/eval_target.py`): `uv run lite-eval run eval/lite-eval/suites/multihop.yaml`; `uv run python eval/longmemeval.py s|m|oracle`. LongMemEval tests only the search layer (each question's user utterances are written as memories, recall@k / hit@k are computed per session); answer accuracy needs a model judge, which waits for lite-eval E5. The official data is downloaded to a temporary directory each time and deleted after the run, so it is not kept on this machine or in the repo (decided by the owner 2026-11-14). `litemem eval` (S5's synthetic conversation set, the mem0 comparison) is not migrated for now.
 
-## 9. 配置
+## 9. Configuration
 
-pydantic-settings，前缀 `LITEMEM_`：
+pydantic-settings, prefix `LITEMEM_`:
 
-- 数据库 URL、namespace；
-- embedding 的 backend 和模型（`LITEMEM_EMBEDDING__`，lite-model 的配置，embed role，见 §12 S14）；
-- 每个角色对应的 LLM backend 和模型（lite-model 的配置，见 §3）；
-- 检索权重和半衰期；
-- 整合和遗忘的阈值；
-- 服务端口；
-- API key 的密钥。
+- Database URL, namespace;
+- The embedding backend and model (`LITEMEM_EMBEDDING__`, lite-model's config, the embed role, see §12 S14);
+- The LLM backend and model for each role (lite-model's config, see §3);
+- Search weights and half-lives;
+- Consolidation and forgetting thresholds;
+- Service port;
+- The secret for API keys.
 
-密钥只从环境变量读取；仓库里只提交 `.env.example`。
+Secrets are read only from environment variables; only `.env.example` is committed to the repo.
 
-## 10. 与 llm-steward 集成（S9）
+## 10. Integration with llm-steward (S9)
 
-llm-steward 新增 `LiteMemProvider`，实现它的 `MemoryProvider` Protocol，支持两种接入方式：直接 import 库，或调用 HTTP 服务。两种方式都要跑 llm-steward 的记忆合约测试。
+llm-steward gains a `LiteMemProvider` that implements its `MemoryProvider` Protocol and supports two ways of connecting: importing the library directly, or calling the HTTP service. Both ways must run llm-steward's memory contract tests.
 
-| llm-steward 调用 | lite-mem 实现 |
+| llm-steward call | lite-mem implementation |
 | --- | --- |
-| `add(messages, scope, infer)` | `add`，带 `idempotency_key`（批次里最后一个 episode 的 id），返回 `MemoryEvent[]`（ADD / SUPERSEDE / DELETE，带 `produced_by`） |
+| `add(messages, scope, infer)` | `add`, with an `idempotency_key` (the id of the last episode in the batch), returns `MemoryEvent[]` (ADD / SUPERSEDE / DELETE, with `produced_by`) |
 | `search(query, scope, top_k, filters)` | `search` |
-| `get / update / delete / list` | `get`、`update`（= CORRECT，id 不变）、`delete`、`list_memories` |
-| `health()` | 存储可用，且 embedding 服务可用 |
+| `get / update / delete / list` | `get`, `update` (= CORRECT, id unchanged), `delete`, `list_memories` |
+| `health()` | The store is available and the embedding service is available |
 
-- **能力**：`{extract, resolves_conflicts, update, delete, metadata_filter}`。
-- **llm-steward 那边要改的**：现在的 `ExtractionService` 只把引擎的 ADD 事件写进镜像（mem0 2.2.1 只会新增）。引擎自己会消解冲突时，要把以下事件映射成治理操作，让历史仍在 llm-steward 里：
-  - SUPERSEDE（`replaced` 是被取代的记忆）映射成 `SupersedeMemory`；
-  - DELETE 映射成 `DeleteMemory`；
-  - EXPIRE 也会出现在 `add` 的结果里：profile key 的旧值已经过期时，写新值会先把它记成 EXPIRE；
-  - 复合事实的 `remainder` 以 ADD 返回，理由是 "kept from <旧 id>"。
-- **推送治理过的记忆**用 `remember`（库，或 `POST /v1/memories`），幂等键用 llm-steward 的记忆 id：`add(infer=false)` 遇到敏感信息会静默丢掉、没有幂等键时重试会重复写。
-- **另一个选择**：llm-steward 用 lite-mem 时关掉引擎内的冲突消解，只用抽取，继续走 llm-steward 自己的冲突补偿。见 §13。
-- **离线变化（S7）**：合并和过期不是 llm-steward 的调用触发的。llm-steward 自己定时调用 `maintain`（库或 `POST /v1/maintain`），把返回的事件映射成治理操作：
-  - MERGE（每个被合并的来源一条，`replaced` 是来源）映射成 `SupersedeMemory`（来源 → 新记忆）；
-  - EXPIRE 映射成按到期时间失效。
-  这样它的镜像不会留着已关闭的来源，也不会因为找不到外部引用而丢掉合并出来的新记忆。不在 llm-steward 控制下跑 `maintain`（比如运营方自己的 cron），镜像就会落后——S9 定要不要加一个按游标拉取事件的接口。
-- **治理规则仍由 llm-steward 保证**：
-  - 检索结果要经过它的安全网；
-  - 它的保留 key（`steward.*`）不会推给引擎；
-  - 按用户删除时调 `erase`。
-- 接入后，llm-steward 自己的抽取（`STEWARD_MEMORY_LLM`）对 lite-mem 不再生效：lite-mem 有 `extract` 能力，按能力判断会走引擎自己的抽取。
+- **Capabilities**: `{extract, resolves_conflicts, update, delete, metadata_filter}`.
+- **What changes on the llm-steward side**: today's `ExtractionService` writes only the engine's ADD events into the mirror (mem0 2.2.1 only adds). When the engine resolves conflicts itself, these events must be mapped to governance operations so the history stays in llm-steward:
+  - SUPERSEDE (`replaced` is the superseded memory) maps to `SupersedeMemory`;
+  - DELETE maps to `DeleteMemory`;
+  - EXPIRE can also appear in the result of `add`: when the old value of a profile key has already expired, writing the new value first records it as EXPIRE;
+  - The `remainder` of a compound fact is returned as ADD, with the reason "kept from <old id>".
+- **Pushing governed memories** uses `remember` (library, or `POST /v1/memories`), with llm-steward's memory id as the idempotency key: `add(infer=false)` silently drops sensitive information, and without an idempotency key a retry writes twice.
+- **Another option**: when llm-steward uses lite-mem, turn off the engine's conflict resolution, use only extraction, and keep using llm-steward's own conflict compensation. See §13.
+- **Offline changes (S7)**: merge and expiry are not triggered by a call from llm-steward. llm-steward calls `maintain` itself on a schedule (library or `POST /v1/maintain`) and maps the returned events to governance operations:
+  - MERGE (one per merged source, `replaced` is the source) maps to `SupersedeMemory` (source → new memory);
+  - EXPIRE maps to invalidation at the expiry time.
+  This way its mirror does not keep closed sources, and does not lose the newly merged memory because no external reference can be found for it. If `maintain` is run outside llm-steward's control (for example the operator's own cron), the mirror falls behind; S9 decides whether to add an interface that pulls events by cursor.
+- **Governance rules are still guaranteed by llm-steward**:
+  - Search results go through its safety net;
+  - Its reserved keys (`steward.*`) are not pushed to the engine;
+  - It calls `erase` when deleting per user.
+- After the integration, llm-steward's own extraction (`STEWARD_MEMORY_LLM`) no longer takes effect for lite-mem: lite-mem has the `extract` capability, so by capability check the engine's own extraction is used.
 
-## 11. 项目结构
+## 11. Project structure
 
 ```
 lite-mem/
-  pyproject.toml              # uv；extras: [server] [anthropic] [sqlite] [eval]
+  pyproject.toml              # uv; extras: [server] [anthropic] [sqlite] [eval]
   Dockerfile  deploy/compose.yaml
   src/lite_mem/
-    config.py types.py engine.py factory.py  # MemoryEngine：库和服务的唯一核心；factory 按配置组装
-    extract.py resolve.py consolidate.py     # 流水线各步（Protocol + LLM 实现）
-    embedding.py keyword.py fusion.py        # 与 lite-rag 同样的写法，各自独立，不互相依赖
-    llm.py                                   # LLM Protocol 和 lite-model 的 adapter（S12）
-    sensitive.py errors.py ids.py db.py      # 敏感信息、错误与脱敏、UUIDv7、PG 迁移
-    stores/ base.py pg.py sqlite.py          # Store Protocol + 两个后端
-    migrations/                              # litemem migrate（PG）
-    server/ app.py auth.py schemas.py        # FastAPI（extra [server]）
-    eval.py eval_mem0.py                     # litemem eval（mem0 对照：extra [eval]）
-    eval_target.py                           # lite-eval 的 Target：两跳评测、LongMemEval（S11，extra [eval]）
-    cli.py testing.py prompts/*.j2           # testing：给测试和下游项目用的 fake
-  tests/  unit/（fakes）  integration/（PG：独立的测试 schema lite_mem_test）  -m ollama 可选
-  eval/   合成对话、标注、报告；mem0 对照脚本；lite-eval/（两跳数据集和 suite，runs/ 不提交）；
-          longmemeval.py（每次下载到临时目录，跑完删除）
+    config.py types.py engine.py factory.py  # MemoryEngine: the only core of library and service; factory assembles from config
+    extract.py resolve.py consolidate.py     # pipeline steps (Protocol + LLM implementation)
+    embedding.py keyword.py fusion.py        # written the same way as in lite-rag, each independent, no mutual dependency
+    llm.py                                   # LLM Protocol and the lite-model adapter (S12)
+    sensitive.py errors.py ids.py db.py      # sensitive information, errors and redaction, UUIDv7, PG migrations
+    stores/ base.py pg.py sqlite.py          # Store Protocol + two backends
+    migrations/                              # litemem migrate (PG)
+    server/ app.py auth.py schemas.py        # FastAPI (extra [server])
+    eval.py eval_mem0.py                     # litemem eval (mem0 comparison: extra [eval])
+    eval_target.py                           # lite-eval Target: two-hop eval, LongMemEval (S11, extra [eval])
+    cli.py testing.py prompts/*.j2           # testing: fakes for tests and downstream projects
+  tests/  unit/ (fakes)  integration/ (PG: separate test schema lite_mem_test)  -m ollama optional
+  eval/   synthetic conversations, annotations, reports; mem0 comparison script; lite-eval/ (two-hop dataset and suite, runs/ not committed);
+          longmemeval.py (downloaded to a temporary directory each time, deleted after the run)
   docs/lite-mem-design.md
 ```
 
-## 12. 阶段与验收
+## 12. Stages and acceptance
 
-每个阶段结束时，ruff、ruff format、mypy、pytest 都要通过，每个新测试至少见过一次失败（red）。然后做阶段收尾：
+At the end of each stage ruff, ruff format, mypy and pytest must all pass, and every new test must have been seen failing (red) at least once. Then do the stage close-out:
 
-1. 对整个阶段的 diff 跑 `/simplify` 并应用修改；
-2. 用 Codex 只读审查同一个 diff；
-3. 修掉成立的问题（bug 先写失败的测试），不成立的写下理由；
-4. 重跑全部检查。
+1. Run `/simplify` on the whole stage's diff and apply the changes;
+2. Have Codex review the same diff, read-only;
+3. Fix the valid findings (for a bug, write the failing test first) and write down the reason for each one that is not valid;
+4. Re-run all the checks.
 
-见 `CLAUDE.md`。收尾完成之前不开始下一阶段。
+See `CLAUDE.md`. The next stage does not start before the close-out is done.
 
-| 阶段 | 内容 | 验收 |
+| Stage | Content | Acceptance |
 | --- | --- | --- |
-| S0 环境 | 确认 Ollama 上有 `bge-m3`、`qwen3:8b`；共享 PG 上建库或 schema `lite_mem` 和角色；用文档核对 psycopg、pgvector、jieba、FastAPI、OpenAI/Anthropic SDK 的版本和 API，并锁定；建项目 KB `projects/lite-mem/` | 版本写进 `pyproject.toml`；`psql` 能连上，`vector` 扩展可用；KB 建好并通过校验 |
-| S1 骨架 | uv、ruff、mypy、pytest、配置、fakes（FakeLLM、FakeEmbedder）、CLI 骨架、`litemem migrate`、CI（含镜像构建的占位） | `litemem --help` 可用；迁移在测试 schema 上执行通过；CI 绿 |
-| S2 存储与直接写入 | `PgStore`；`add(infer=false)`、`get`、`list_memories`、`update`（更正）、`delete`、`erase`；历史事件；`as_of`；profile key 取代；幂等键 | 一次写入一个事务（故障注入时整体回滚）；取代后旧版本在 `as_of` 下仍可见；`erase` 之后该用户什么都不剩；同一幂等键只写一次 |
-| S3 检索 | 向量 + 自写 BM25（jieba）+ RRF；重要性、衰减、置信度权重；scope、类型、metadata 过滤 | BM25 与手算一致；融合顺序正确；共享记忆和自己的记忆都能找到，别人的找不到；`-m ollama` 真实往返 |
-| S4 抽取与冲突消解 | `Extractor`、`Resolver`（从 llm-steward 移植，提示词放进 `prompts/`）；`add(infer=true)` 完整流水线；事件带出处 | FakeLLM 测试：北京→上海是 UPDATE（旧的失效）、重复是 NOOP、越界目标按 ADD；整批一个事务；重试（同一幂等键）不会再调模型 |
-| S5 评测 | 合成对话集与标注、`litemem eval`、mem0 对照脚本 | 用本地 Ollama 跑出对比表：只新增 vs 消解、两版抽取提示词、lite-mem vs mem0；结果记进 KB |
-| S5b 敏感信息 | 写入前由代码识别密码、卡号、证件号等（规则 + 可选的模型判断），按配置拒绝或打码；事件记下原因 | 合成集里的银行卡密码不再成为记忆；正常数字（电话分机、年份）不误伤；eval 重跑 |
-| S6 HTTP 服务 | FastAPI、API key、Problem Details、`Idempotency-Key`、Dockerfile、compose、CI 构建镜像 | 未授权 401，越权 namespace 403；`docker compose up` 后完成 add → search → history；库和 API 结果一致 |
-| S7 整合与遗忘 | 合并、归纳、过期、衰减遗忘；`litemem maintain`；复合事实被取代时不丢没变的部分（S6 发现） | FakeLLM 测试：相似记忆合并成一条且历史为 MERGE；过期的检索不到但 `as_of` 可见；用 eval 定合并阈值 |
-| S7b SQLite 后端（可选） | `SqliteStore`（sqlite-vec + 自己的倒排），嵌入式运行 | 同一套 Store 合约测试在 PG 和 SQLite 上都通过 |
-| S8 收尾 | 整个引擎的 `/simplify` 和 Codex 审查，修复，重跑全部检查 | 审查结论记录在案 |
-| S9 接入 llm-steward | `LiteMemProvider`（库和 HTTP 两种）；llm-steward 的事件映射（UPDATE、DELETE）；合约测试；更新 llm-steward 设计文档 | llm-steward 的记忆合约测试在两种接入方式下都通过；手动端到端：对话 → 记忆 → 更新 → 检索 |
-| S10 记忆图谱（以后） | 实体和关系的抽取与查询 | 先测多跳的缺口（2026-11-12 已测，见下面的 S10 记录）；图谱暂不做，先做查询时的二轮检索 |
-| S11 评测迁到 lite-eval | 两跳评测改成 lite-eval 的数据集、suite 和 Target；LongMemEval S / M / oracle 的检索召回 | 原脚本冻结后同进程对照：8 组配置每题命中完全相同（FakeEmbedder 进 CI，bge-m3 在 `-m ollama` 下，并与 2026-11-12 的记录数字相同）；三个变体的结果记进 KB |
-| S12 迁到 lite-model | LLM 调用改由 lite-model 完成（它的设计 §12）：`llm.py` 只留 Protocol 和 adapter，配置嵌入它的 `ModelsConfig`，FakeLLM 基于它的 `FakeModel`；删掉旧客户端 | 迁移前录下的 12 个请求（4 个调用 × 默认 / reasoning / Anthropic）和迁移后逐字段相同；`-m ollama` 通过；`litemem eval` 前后各跑两次，结果落在迁移前的波动范围内；来源格式仍是 `openai:<model>` |
-| S13 给提示词用的上下文 | `MemoryEngine.context` → `MemoryContext(text, hits)`；`context.j2`；CLI `litemem context`；`POST /v1/memories:context` | 结果就是 `search` 的命中、顺序不变；每条一行、带日期（episodic 用 on）、中英文标题都说明不是指令；预算内标题只算一次、文本不超预算；鉴权和 namespace 规则同 search |
-| S14 embedding 迁到 lite-model | `embedding.py` 只留 `Embedder` Protocol 和 adapter（`LiteModelEmbedder`），调用走 lite-model 0.5.1 的 `embed()`；`EmbeddingConfig` 改成 lite-model 的 `ModelsConfig` | 索引身份不变（默认 `ollama` / `bge-m3:567m`）；`-m ollama` 下新路径（`/v1/embeddings`）和旧路径（`/api/embed`）向量逐元素相等；旧的 `PROVIDER` / `BASE_URL` / `API_KEY` 启动时报错并指出新键；Anthropic 结构化请求体按 lite-model 0.5.0 的新形状重新固定 |
+| S0 Environment | Confirm `bge-m3` and `qwen3:8b` are on Ollama; create the database or schema `lite_mem` and the role on the shared PG; check the versions and APIs of psycopg, pgvector, jieba, FastAPI and the OpenAI/Anthropic SDKs against the docs and pin them; create the project KB `projects/lite-mem/` | Versions are in `pyproject.toml`; `psql` can connect and the `vector` extension is available; the KB is created and passes validation |
+| S1 Skeleton | uv, ruff, mypy, pytest, config, fakes (FakeLLM, FakeEmbedder), CLI skeleton, `litemem migrate`, CI (with a placeholder for the image build) | `litemem --help` works; migrations run through on the test schema; CI is green |
+| S2 Storage and direct writes | `PgStore`; `add(infer=false)`, `get`, `list_memories`, `update` (correct), `delete`, `erase`; history events; `as_of`; profile key supersede; idempotency key | One write is one transaction (rolls back as a whole under fault injection); after a supersede the old version is still visible under `as_of`; after `erase` nothing of that user is left; the same idempotency key writes only once |
+| S3 Search | Vector + self-written BM25 (jieba) + RRF; importance, decay and confidence weights; scope, type and metadata filters | BM25 matches the hand calculation; the fusion order is correct; shared memories and one's own can be found, other people's cannot; a real round trip under `-m ollama` |
+| S4 Extraction and conflict resolution | `Extractor`, `Resolver` (ported from llm-steward, prompts go into `prompts/`); the full `add(infer=true)` pipeline; events carry provenance | FakeLLM tests: Beijing→Shanghai is UPDATE (the old one is invalidated), a repeat is NOOP, an out-of-range target is handled as ADD; a whole batch is one transaction; a retry (same idempotency key) does not call the model again |
+| S5 Eval | Synthetic conversation set and annotations, `litemem eval`, the mem0 comparison script | Run a comparison table on the local Ollama: add only vs resolution, two versions of the extraction prompt, lite-mem vs mem0; results go into the KB |
+| S5b Sensitive information | Before writing, code recognises passwords, card numbers, ID numbers and so on (rules + optional model judgement) and rejects or masks per config; the event records the reason | The bank card password in the synthetic set no longer becomes a memory; normal numbers (phone extensions, years) are not hit by mistake; the eval is re-run |
+| S6 HTTP service | FastAPI, API key, Problem Details, `Idempotency-Key`, Dockerfile, compose, CI image build | Unauthorised is 401, an out-of-scope namespace is 403; after `docker compose up`, add → search → history completes; library and API results are the same |
+| S7 Consolidation and forgetting | Merge, summarising, expiry, decay forgetting; `litemem maintain`; when a compound fact is superseded, the part that did not change is not lost (found in S6) | FakeLLM tests: similar memories merge into one and the history is MERGE; an expired memory cannot be retrieved but is visible to `as_of`; the merge threshold is set with an eval |
+| S7b SQLite backend (optional) | `SqliteStore` (sqlite-vec + its own inverted index), embedded operation | The same Store contract tests pass on both PG and SQLite |
+| S8 Close-out | `/simplify` and Codex review of the whole engine, fixes, re-run all checks | The review conclusions are on record |
+| S9 Integration with llm-steward | `LiteMemProvider` (library and HTTP); llm-steward's event mapping (UPDATE, DELETE); contract tests; update llm-steward's design doc | llm-steward's memory contract tests pass in both ways of connecting; manual end to end: conversation → memory → update → search |
+| S10 Memory graph (later) | Extraction and querying of entities and relations | First measure the multi-hop gap (measured 2026-11-12, see the S10 record below); the graph is not built for now, the query-time second-round search is built first |
+| S11 Eval moves to lite-eval | The two-hop eval becomes a lite-eval dataset, suite and Target; LongMemEval S / M / oracle search recall | After the old script is frozen, compare in the same process: all 8 configs have exactly the same hits per question (FakeEmbedder goes into CI, bge-m3 under `-m ollama`, with numbers equal to the 2026-11-12 record); the results of the three variants go into the KB |
+| S12 Move to lite-model | LLM calls are made by lite-model (its design §12): `llm.py` keeps only the Protocol and the adapter, config is embedded in its `ModelsConfig`, FakeLLM is based on its `FakeModel`; delete the old client | The 12 requests recorded before the migration (4 calls × default / reasoning / Anthropic) are identical field by field after it; `-m ollama` passes; `litemem eval` run twice before and twice after lands within the pre-migration variance; the provenance format is still `openai:<model>` |
+| S13 Context for prompts | `MemoryEngine.context` → `MemoryContext(text, hits)`; `context.j2`; CLI `litemem context`; `POST /v1/memories:context` | The result is the hits of `search`, order unchanged; one line per memory, with a date (episodic uses "on"), the Chinese and English headings both say these are not instructions; within the budget the heading counts once and the text does not exceed the budget; auth and namespace rules are the same as search |
+| S14 Embedding moves to lite-model | `embedding.py` keeps only the `Embedder` Protocol and the adapter (`LiteModelEmbedder`), calls go through lite-model 0.5.1's `embed()`; `EmbeddingConfig` becomes lite-model's `ModelsConfig` | The index identity is unchanged (default `ollama` / `bge-m3:567m`); under `-m ollama` the vectors from the new path (`/v1/embeddings`) and the old path (`/api/embed`) are equal element by element; the old `PROVIDER` / `BASE_URL` / `API_KEY` raise an error at startup naming the new keys; the Anthropic structured request body is re-pinned to the new shape from lite-model 0.5.0 |
 
-### 阶段记录
+### Stage records
 
-- **S0（2026-11-12）**：共享 PG 上建了库 `lite_mem`（角色 `lite_mem`，`vector` 0.8.6）；Ollama 上已有 `bge-m3:567m`、`qwen3:8b`；版本沿用 lite-rag 已在用的（psycopg 3.3.8、openai 3.46.0、anthropic 2.6.0、fastapi 0.162.2 等）；项目 KB `projects/lite-mem/` 建好。环境阶段没有代码，不做 /simplify 和 Codex。
-- **S1（2026-11-12）**：骨架、配置、迁移（`litemem migrate`）、fakes、CI。
-  - /simplify 后：每个角色可单独指定 provider、端点和模型（`LITEMEM_LLM__ROLES={"resolve": {"provider": "anthropic", "model": …}}`，换了 provider 就不沿用默认的端点和 key）；LLM 接口改收 payload 字典，由客户端序列化；namespace 记录分词器；只留一个 `errors.redact()`（整段连接串按 libpq 解析，其余按模式），在 CLI 出口统一脱敏；namespace 和 schema 用 pydantic 注解类型校验。没做：错误类先保留（S2 起就用到）；迁移"已是最新"时的往返次数、测试每次重建 schema（迁移少时无所谓，S2 再看）。
-  - 自己发现的 bug：schema 字段带别名 `schema` 时，pydantic-settings 从不带前缀的 `SCHEMA` 读，测试设置的 `LITEMEM_SCHEMA` 没生效，迁移测试实际跑在了应用 schema 上。字段改名 `db_schema`（`LITEMEM_DB_SCHEMA`），不用别名；应用 schema 当时是空的，已删除重建。
-  - Codex：P2 拒绝 `public` 和系统 schema（配置和 `migrate()` 两处都查）——修了；P2 错误原文可能带连接信息——由 CLI 出口统一脱敏，测试在边界制造一条带密码的错误来验证；P1"`conn.execute` 不接受 bytes"——不成立：psycopg 3 的查询参数接受 `bytes`，本阶段的测试实际执行了迁移，lite-rag 同样这么用。
-- **S2（2026-11-12）**：迁移 0002（`memories`、`memory_events`、`idempotency`），`PgStore`，`MemoryEngine` 的直接写入、取代、更正、退役、彻底删除、历史、`as_of`、幂等。
-  - /simplify 后：操作命名定为 ADD / CORRECT / SUPERSEDE / DELETE（冲突消解的 UPDATE 决定落成 SUPERSEDE，S9 映射跟着改）；所有写操作走一个 `_apply`，都带 `produced_by`，S3 只需在这里加向量和倒排；幂等先只读查（`replay`），再在事务里认领，S4 重试就不会再调模型；`superseded_by` 加索引；`current_profile` 的条件和唯一索引的表达式一致、列表查询按字段拼条件，能用上索引；`history` 一次查询；事件序列化交给 pydantic；`MEMORY_TYPES` 从 Literal 推出。没做：一次写入多条时的往返合并（pipeline、批量插入）——批次小，等 eval 量出瓶颈再做；只读查询不开事务；`Fact` 改用 pydantic 校验；`last_accessed_at` 留给 S3（检索命中时更新）。
-  - Codex：High 幂等键被另一个用户复用会拿到前一个用户的结果——改为拒绝（Conflict）；High 同一 profile key 第一次并发写会撞唯一索引——按 (namespace, scope, key) 加事务级 advisory lock；Medium 空字符串和 NULL 在唯一索引里相同——拒绝空的 scope id；Medium `as_of` 看到更正后的措辞——按设计（更正追溯生效，见 §4），写进文档。每条修复都先有失败的测试，并做了变异检查。
-  - 自己发现的：取代时先关旧行（腾出唯一的"当前值"位置）再插新行，`superseded_by` 外键要延迟到提交时检查（`DEFERRABLE INITIALLY DEFERRED`）。
-- **S3（2026-11-12）**：迁移 0003（倒排 `memory_postings`、`memories.terms`；每个维度一张向量表，绑定 namespace 时建）；jieba 分词与 BM25（SQL 里算，和公式逐项相等）、RRF、按重要性、类型半衰期、置信度加权；`Filters`（scope、共享、类型、metadata、`as_of`）；Ollama 和 OpenAI 兼容两种 embedder；写入时向量在事务外算好，倒排和向量与记忆行同一个事务；检索命中计数。`-m ollama` 真实往返通过（含中文问、英文记忆的跨语言查询）。
-  - /simplify 后：`Filters` 加 `exact` 模式（S4 用）；检索拆出内部的 `_rank`（S4 复用，不算访问、不重复 embedding）；向量检索返回相似度（S7 合并用）；已带向量的操作不再重算；更正只校验一次；维度缓存放在 `PgStore`；向量用 `float8[]::vector` 传；建向量表前先查是否已存在（避免每次构造引擎都跑 DDL）。没做：BM25 统计每次查询现算（十万级以上再加缓存）；检索时的命中计数是一次写（每秒数百次检索时再改成批量）；一次检索 4–5 次往返、一次写入每条记忆约 4 次往返（批量导入或远程库时再合并）；OpenAI embedder 改用官方 SDK（两种 embedder 共用一套 HTTP 代码更简单）；半衰期的 key 用 `MemoryType` 类型（只是外观）。
-  - Codex：P1 带过滤的 HNSW 检索在别的 scope 有大量更近向量时可能漏召回——改为在 scope 内精确检索，正确性不再取决于规划器；回归测试在本地没能复现出原问题（scope 窄时规划器本来就走精确路径），如实记录；P2 半衰期可以是 0 或负数——改为必须大于 0（先红后绿）。
-- **S4（2026-11-12）**：`extract`、`resolve` 两个角色（提示词 `extract_facts.j2`、`resolve_conflict.j2`，从 llm-steward 移植并扩展：抽取同时给出类型和重要性）；OpenAI 兼容（含 Ollama `/v1`）和 Anthropic（强制工具）两种客户端，按角色路由；`add(infer=true)` 完整流水线；`litemem add/search/list/history/erase`（erase 要 `--yes`）；`factory.open_engine`。`-m ollama` 用 qwen3:8b 跑通"住北京 → 搬到上海"。
-  - 真实模型暴露的问题（S5 量化）：qwen3:8b 不遵守"用对方的语言写"（中文输入写成英文事实）；一句话抽成两条近义事实；一次往返 100–300 秒（思考模式）。处理：语言由代码判断后显式传给模型（`LANGUAGE`）；同批事实互相比对（见下）；思考模式开关留给 S5 实测。
-  - Codex：High 模型调用失败时把上游报错原文放进 `ModelError`（可能带 key、授权头、带凭据的 URL）——改为只给错误类型，原异常留作 cause；Medium 空回复（没有 choice、没有工具块）抛 `IndexError`——改为 `ModelError`；Medium 同批两条事实指向同一条旧记忆，第二条降级为新增，留下矛盾的当前事实——改为逐条消解，本批已接受的事实作为候选（批内临时 id）交给后面的事实，后者可以判 NOOP 或在批内取代前者并继承它对旧记忆的取代，指向已被本批取代的旧记忆时改为指向取代它的那条；Medium 同一幂等键的并发请求都会调一遍模型——不改：只写一次，多花的是成本，杜绝它要跨模型调用持锁，不值得。
-  - /simplify 后：引擎核对目标必须在候选里且仍是当前，每次降级都写原因（消解器只解析 id）——测试证明它挡住了"消解器指向同 namespace 里别的用户的记忆"；两条写路径共用 `_commit`；客户端只注入一个、两种 vendor 共用回复校验、Anthropic 客户端按目标缓存（原来两个角色会共用第一个）；提示词名、消解方式（`llm` / `add_only`）、相关记忆条数可配置（`LITEMEM_PIPELINE__*`），S5 直接切换；配置给定向量维度就不再探测；CLI 只开一个连接；内部查相关记忆时少取候选。没做：改用 SDK 的 `parse()`（手写的 strict schema 对现有模型够用，换了要连测试替身一起改）；并行调用消解（逐条消解需要顺序）；一次调用消解整批（S5 作为另一种实现对比）；出处拆成"抽取者 / 决定者"两个字段、返回结果里带 NOOP（S9 定事件契约时再看）；思考模式开关（S5 实测）。
-- **S5（2026-11-12）**：合成对话集 `eval/dataset.json`（三个虚构的人：中文、英文、中英混杂；11 段对话、19 条应记住、7 条应忘掉、11 个问题），`litemem eval`（lite-mem 的 variant：`resolve`、`add_only`、`terse_prompt`、`thinking`；`--mem0` 加 mem0 2.2.1 对照；`--out` 存 JSON），每个角色可设 `reasoning`（以 `reasoning_effort` 发出；qwen3 关掉思考后一次调用约 20 秒 → 1 秒，Ollama `/v1` 不认 `think:false`）。
-  - 结果（qwen3:8b + bge-m3，本地 Ollama，跑一次，19/7/11 条检查；文件 `eval/results/2026-11-12-s5.json`，详细分析在 KB `projects/lite-mem/reference/eval-results.md`）：
+- **S0 (2026-11-12)**: created the database `lite_mem` on the shared PG (role `lite_mem`, `vector` 0.8.6); Ollama already has `bge-m3:567m` and `qwen3:8b`; versions follow those lite-rag already uses (psycopg 3.3.8, openai 3.46.0, anthropic 2.6.0, fastapi 0.162.2 and so on); the project KB `projects/lite-mem/` is created. The environment stage has no code, so no /simplify and no Codex.
+- **S1 (2026-11-12)**: skeleton, config, migrations (`litemem migrate`), fakes, CI.
+  - After /simplify: each role can name its own provider, endpoint and model (`LITEMEM_LLM__ROLES={"resolve": {"provider": "anthropic", "model": …}}`; once the provider is changed, the default endpoint and key are not carried over); the LLM interface takes a payload dict that the client serialises; the namespace records the tokenizer; only one `errors.redact()` is kept (a whole connection string is parsed per libpq, the rest by pattern), with redaction applied uniformly at the CLI exit; namespace and schema are validated with pydantic annotated types. Not done: the error classes are kept for now (used from S2); the number of round trips when the migration is "already up to date", and rebuilding the schema in every test (does not matter while migrations are few, look again in S2).
+  - A bug found by ourselves: when the schema field had the alias `schema`, pydantic-settings read it from the unprefixed `SCHEMA`, so the `LITEMEM_SCHEMA` set by the test took no effect and the migration test actually ran on the application schema. The field was renamed `db_schema` (`LITEMEM_DB_SCHEMA`) with no alias; the application schema was empty at the time, and was dropped and rebuilt.
+  - Codex: P2 reject `public` and system schemas (checked in both the config and `migrate()`): fixed; P2 the original error text may carry connection information: redacted uniformly at the CLI exit, and the test makes an error with a password at the boundary to verify it; P1 "`conn.execute` does not accept bytes": not valid: psycopg 3 query parameters accept `bytes`, this stage's tests actually ran the migration, and lite-rag uses it the same way.
+- **S2 (2026-11-12)**: migration 0002 (`memories`, `memory_events`, `idempotency`), `PgStore`, and `MemoryEngine`'s direct write, supersede, correct, retire, full delete, history, `as_of` and idempotency.
+  - After /simplify: the operations are named ADD / CORRECT / SUPERSEDE / DELETE (the UPDATE decision of conflict resolution ends up as SUPERSEDE, and the S9 mapping follows); all write operations go through one `_apply`, all with `produced_by`, so S3 only needs to add the vector and postings there; idempotency first does a read-only check (`replay`) and then claims inside the transaction, so an S4 retry does not call the model again; an index on `superseded_by`; the condition of `current_profile` matches the unique index's expression and the list query assembles conditions per field, so the index can be used; `history` is one query; event serialisation is left to pydantic; `MEMORY_TYPES` is derived from the Literal. Not done: merging round trips when one write has several items (pipeline, batch insert): batches are small, wait for the eval to measure a bottleneck; no transaction for read-only queries; switching `Fact` to pydantic validation; `last_accessed_at` is left for S3 (updated on a search hit).
+  - Codex: High an idempotency key reused by another user would get the first user's result: changed to reject (Conflict); High the first concurrent write of the same profile key would hit the unique index: a transaction-level advisory lock on (namespace, scope, key); Medium an empty string and NULL are the same in the unique index: reject an empty scope id; Medium `as_of` sees the corrected wording: by design (a correction applies retroactively, see §4), written into the document. Every fix had a failing test first, and a mutation check was done.
+  - Found by ourselves: on supersede, close the old row first (freeing the single "current value" slot) and then insert the new row, and the `superseded_by` foreign key has to be checked deferred until commit (`DEFERRABLE INITIALLY DEFERRED`).
+- **S3 (2026-11-12)**: migration 0003 (the inverted index `memory_postings`, `memories.terms`; one vector table per dimension, created when the namespace is bound); jieba tokenisation and BM25 (computed in SQL, equal to the formula term by term), RRF, weighting by importance, per-type half-life and confidence; `Filters` (scope, shared, type, metadata, `as_of`); two embedders, Ollama and OpenAI-compatible; at write time the vector is computed outside the transaction, and the postings and vector are in the same transaction as the memory row; hit counting on search. A real round trip under `-m ollama` passes (including a cross-language query with a Chinese question and an English memory).
+  - After /simplify: `Filters` gets an `exact` mode (used by S4); search splits out an internal `_rank` (reused by S4, which counts no access and does not embed again); vector search returns the similarity (used by S7 merge); operations that already carry a vector do not recompute it; a correction is validated only once; the dimension cache lives in `PgStore`; the vector is passed as `float8[]::vector`; before creating a vector table check whether it already exists (to avoid running DDL every time an engine is constructed). Not done: BM25 statistics are computed per query (add a cache beyond a hundred thousand rows); hit counting at search time is one write (change to batching at hundreds of searches per second); one search takes 4–5 round trips and one write takes about 4 round trips per memory (merge them for bulk import or a remote database); switch the OpenAI embedder to the official SDK (simpler for both embedders to share one set of HTTP code); use the `MemoryType` type for the half-life key (cosmetic only).
+  - Codex: P1 filtered HNSW search could miss recall when another scope has many nearer vectors: changed to exact search inside the scope, so correctness no longer depends on the planner; the regression test could not reproduce the original problem locally (when the scope is narrow the planner takes the exact path anyway), recorded as it is; P2 the half-life could be 0 or negative: must now be greater than 0 (red then green).
+- **S4 (2026-11-12)**: the two roles `extract` and `resolve` (prompts `extract_facts.j2` and `resolve_conflict.j2`, ported from llm-steward and extended: extraction also gives type and importance); two clients, OpenAI-compatible (including Ollama `/v1`) and Anthropic (forced tool), routed by role; the full `add(infer=true)` pipeline; `litemem add/search/list/history/erase` (erase needs `--yes`); `factory.open_engine`. Under `-m ollama` with qwen3:8b, "lives in Beijing → moved to Shanghai" runs through.
+  - Problems exposed by the real model (quantified in S5): qwen3:8b does not follow "write in the other person's language" (Chinese input written as English facts); one sentence is extracted as two near-synonymous facts; one round trip takes 100–300 seconds (thinking mode). Handling: the language is decided by code and passed explicitly to the model (`LANGUAGE`); facts in the same batch are compared with each other (see below); the thinking-mode switch is left for S5 to measure.
+  - Codex: High when a model call fails, the original upstream error text was put into `ModelError` (it may carry a key, an auth header, a URL with credentials): changed to give only the error type, with the original exception kept as the cause; Medium an empty reply (no choice, no tool block) raised `IndexError`: changed to `ModelError`; Medium two facts in the same batch pointing at the same old memory made the second one degrade to an add, leaving contradictory current facts: changed to resolve one by one, with the facts already accepted in this batch handed to later facts as candidates (temporary in-batch ids); a later fact can decide NOOP or supersede the earlier one inside the batch and inherit its supersede of the old memory, and when it points at an old memory already superseded by this batch it is redirected to the one that superseded it; Medium concurrent requests with the same idempotency key each call the model: not changed: it is written only once, the extra cost is only money, and preventing it would mean holding a lock across model calls, which is not worth it.
+  - After /simplify: the engine checks that the target is among the candidates and still current, and every downgrade writes a reason (the resolver only parses the id); a test proves it blocks "the resolver points at another user's memory in the same namespace"; the two write paths share `_commit`; only one client is injected, the two vendors share reply validation, and the Anthropic client is cached per target (before, two roles shared the first one); the prompt name, resolution mode (`llm` / `add_only`) and number of related memories are configurable (`LITEMEM_PIPELINE__*`), so S5 can switch directly; when the config gives the vector dimension it is no longer probed; the CLI opens only one connection; fewer candidates are fetched when looking up related memories internally. Not done: switch to the SDK's `parse()` (the hand-written strict schema is enough for the current models, and a change would also change the test doubles); call resolution in parallel (one-by-one resolution needs an order); resolve the whole batch in one call (S5 compares it as another implementation); split provenance into two fields "extractor / decider", and return NOOP in the result (look again when S9 fixes the event contract); the thinking-mode switch (measured in S5).
+- **S5 (2026-11-12)**: the synthetic conversation set `eval/dataset.json` (three fictional people: Chinese, English, mixed; 11 conversations, 19 facts to remember, 7 to forget, 11 questions), `litemem eval` (lite-mem variants: `resolve`, `add_only`, `terse_prompt`, `thinking`; `--mem0` adds the mem0 2.2.1 comparison; `--out` saves JSON), each role can set `reasoning` (sent as `reasoning_effort`; with qwen3's thinking off one call goes from about 20 seconds to 1 second, and Ollama `/v1` does not accept `think:false`).
+  - Result (qwen3:8b + bge-m3, local Ollama, one run, 19/7/11 checks; file `eval/results/2026-11-12-s5.json`, detailed analysis in the KB `projects/lite-mem/reference/eval-results.md`):
 
-    | 系统 | 记住 | 该忘没忘 | hit@3 | 记忆数 | 秒/次写入 |
+    | System | Remembered | Should be forgotten but was not | hit@3 | Memory count | Seconds per write |
     | --- | --- | --- | --- | --- | --- |
-    | resolve（关思考） | 16/19 | 4/7 | 8/11 | 21 | 9.9 |
-    | add_only（关思考） | 18/19 | 6/7 | 10/11 | 25 | 3.1 |
-    | terse_prompt（关思考） | 18/19 | 2/7 | 11/11 | 15 | 7.6 |
-    | thinking（开思考） | 19/19 | 1/7 | 11/11 | 18 | 46.9 |
+    | resolve (thinking off) | 16/19 | 4/7 | 8/11 | 21 | 9.9 |
+    | add_only (thinking off) | 18/19 | 6/7 | 10/11 | 25 | 3.1 |
+    | terse_prompt (thinking off) | 18/19 | 2/7 | 11/11 | 15 | 7.6 |
+    | thinking (thinking on) | 19/19 | 1/7 | 11/11 | 18 | 46.9 |
     | mem0 2.2.1 | 19/19 | 7/7 | 11/11 | 22 | 33.2 |
 
-    结论：冲突消解是"改了的事实不留旧值"的来源（mem0 7/7 全留，lite-mem 开思考只留 1/7）；qwen3 关掉思考时消解会出错（把"住在上海"判成"住在北京"的重复而丢掉）；简短的抽取提示词对不思考的模型更好；所有系统（含 mem0）都存下了银行卡密码；NOOP 不留事件，查不到事实为什么丢了。默认值不改（一次运行、19 条检查不足以换默认），terse 提示词待第二次运行确认。
-  - 由此加入的后续：写入前在代码里过滤敏感信息（密码、卡号），不靠提示词；NOOP 决定记在写入结果里（S9 定事件契约时）；S7 加整合后重跑。
-  - 自己发现的：mem0 2.2.1 用 ollama embedder 时要 `ollama` 包但没声明依赖，第一次长跑在 lite-mem 跑完 12 分钟后才在 mem0 初始化时崩溃、结果全丢——eval 依赖里加上 `ollama==0.6.3`，并改为先初始化 mem0 再跑（测试覆盖）；CI 的测试库密码是 `postgres`，脱敏后的 `postgresql://postgres:***@` 总会包含它，"输出里没有密码"的断言必然失败——CI 换成不会在输出里巧合出现的密码（`363b770`）。
-  - Codex：P1 stale 评分只要记忆里提到新值就放过旧值（"住 Auckland 和 Wellington" 不算 stale）——`unless` 改为"旧值已过去"的措辞（moved from、以前、used to），先红后绿；P1 mem0 对照按固定的 user id 在固定的 `mem0_eval` 里删数据，会删到别人的——每次运行用自己的 collection 和 history 目录，结束时只删自己的；P2 `get_all` 上限 1000、`MEM0_DIR` 复用旧 history——随上一条一起解决；P2 角色的 `reasoning` 清不回端点默认——加 `"default"`。
-  - /simplify 后：mem0 对照的模型、端点、维度改从 `Settings` 读（原来写死，"同一个本地模型"只是巧合）；`--out` 记录数据集 sha256、git sha、各系统的设置（不含数据库 URL，密钥遮盖）和结果，KB 里的数字能对回到那次运行；`Report` 带 k、比例共用一个函数、CLI 复用 `_engine`。没做（留给 S7，那时 `maintain` 的接口才定）：对话带时间、`System` 加 maintain 钩子、`Report` 加合并数和每次写入的模型调用数；评分拆成可替换的 `Scorer`（关键词 / LLM 评判，接 LoCoMo 时需要）；variant 放进数据文件、命令行覆盖设置（阈值扫描时需要）；按用户并发跑（取决于 Ollama 是否并行）。
-- **S5b（2026-11-12）**：`sensitive.py` 用规则在代码里识别密码 / PIN / 验证码（关键词后面带数字的值，可以被空格分成几段）、银行卡号（卡组织号段 + Luhn 校验，前面标着订单、运单、发票的除外）、身份证号（校验位）、常见 API key；`LITEMEM_PIPELINE__SENSITIVE` = `drop`（默认）| `mask` | `keep`。引擎自己得出的事实（抽取结果、`infer=false` 原样存的消息）遇到敏感内容就丢掉或打码；调用方明确给的事实（`remember`、`update`）在 `drop` 下返回 `InvalidRequest`，让调用方知道没存；所有事件的 reason 一律打码（reason 是自由文本，不拒绝）；日志只记类型和数量。真实模型重跑（`eval/results/2026-11-12-s5b.json`，`add_only` 和 `terse_prompt`）：银行卡密码不再成为记忆，其余检查和 S5 持平。
-  - 取舍：不带数字的密码（"密码是 tiger"）识别不到——要识别就会误伤"forgot her password"这类普通事实；识别靠规则，不靠模型判断（模型判断可以以后作为 `mask` 的补充，不能替代规则）。
-  - Codex：High 带空格的值（"PIN 是 4829 1038"）漏掉——值后面允许跟最多三段带数字的片段；High `update` 的 reason 原样进历史——改在 `_apply` 里给所有事件的 reason 打码，模型写的消解理由也覆盖；Medium 符合 Luhn 的订单号被当成卡号——加卡组织号段，并排除前面标着订单 / 运单 / 发票的数字；Medium 重叠检查是平方复杂度——改为按字符标记，测试用两万处匹配限时 5 秒（平方实现要七秒以上）。每条都先有失败的测试。
-  - /simplify：自己做（diff 约 150 行生产代码）：`keep` 的判断收进一个 `_secrets` 帮助函数；`Policy` 类型在配置里复用，不重复写 Literal。
-- **S6（2026-11-12）**：FastAPI 服务（`litemem serve`，extra `server`，`127.0.0.1:8710`）。API key 写在配置里（`LITEMEM_SERVER__API_KEYS`，只存 sha256，`litemem key new` 生成，token 只显示一次），按 glob 限定 namespace（请求头 `X-LiteMem-Namespace`，默认 `LITEMEM_NAMESPACE`）；没配 key 时只服务直连的回环客户端，`serve` 拒绝绑定其他地址；错误一律 Problem Details，上游错误只记（脱敏的）日志不返回，校验错误不回显输入；`Idempotency-Key`；`/health` 只查数据库（给频繁的探针），`/health?deep=true` 再做一次 embedding（S9 的 provider 用）。存储、embedding、LLM 客户端只建一次（`factory.Components`），每个 namespace 一个轻量引擎。Dockerfile（非 root）、`deploy/compose.yaml`（自带 PG，Ollama 在宿主机，`.env` 整个传进容器）、CI 构建并启动镜像。验收：`docker compose up` 后用 curl 走了 401 / 403、add → search → history、同一幂等键重放，容器里用库的 CLI 读到同样的结果；用真实 qwen3 写入"搬到 Auckland"，判成 SUPERSEDE（91 秒）。
-  - 验收中发现：被取代的是一条复合事实（"住 Wellington，是护士"），整条失效后"护士"也跟着没了。事实要拆得更原子，或取代时保留没变的部分——放进 S7。
-  - /simplify 后：共享组件（原来每个 namespace 一套 HTTP 客户端、一次维度探测，而且建引擎时持有全局锁，第一次用某个 namespace 会卡住所有请求）——改为 `Components` + 按 namespace 加锁、已建好的不加锁读；健康检查不经过 namespace，Docker 每 10 秒的探针不再做 embedding（原来会让 Ollama 永远不卸载模型）；Store 加 `ping()`；去掉自定义的 `Problem` 异常，改用 `HTTPException`；namespace 检查改成一条直线（缺 namespace 一律 400）；compose 用 `env_file` 把 `.env` 全部传进去（原来只列了几个变量，其他设置在容器里悄悄不生效）；CI 不只构建镜像，还启动它；测试里的假引擎收成一个 helper。没做：服务只开已存在的 namespace（S9 里 llm-steward 的 namespace 是动态的，key 的 glob 就是授权边界）；连接池大小可配（事务很短，这个规模下只会排队）；Docker / CI 层缓存（收益小）。
-  - Codex：High 没配 key 时信任直接对端，本机的反向代理会让所有请求看起来都来自回环——没配 key 时，带 `Forwarded` / `X-Forwarded-For` / `X-Real-IP` 的请求一律拒绝，要放到代理后面就必须配 key；Medium 未预料的异常绕过 Problem Details——加兜底 handler，返回通用 500，日志脱敏。都先有失败的测试（变异检查：去掉对应代码，测试变红）。
-  - 提交后的自动安全审查：没配 key 时，本机浏览器里的网页可以借 DNS rebinding 把请求打到 `127.0.0.1:8710`——没配 key 时还要求 Host 是回环名字（`localhost`、`127.0.0.1`、`[::1]`），并拒绝带 `Origin` 的请求（浏览器发的）。
-- **S7（2026-11-12）**：过期（读查询按引擎时钟排除，`maintain` 以到期时间记 EXPIRE）、合并（`consolidate` 角色，同一 scope、同一类型）、归纳和遗忘（默认关闭）、复合事实的 `remainder`、`litemem maintain` 和 `POST /v1/maintain`、`maintain` 返回事件、eval 的 maintain 钩子；规则见 §6，llm-steward 的映射见 §10。
-  - 合并阈值：在最终代码上跑了基线 + 0.80 / 0.85 / 0.90 / 0.95 四个阈值（`eval/results/2026-11-12-s7-merge.json`），**四个都没有合并任何一条**——合成集里的重复在写入时已被消解器判成 NOOP，扫描定不了阈值。改为直接看 `add_only`（不消解、重复都留着）记忆两两之间的 bge-m3 相似度：唯一一对真重复（"每天早上喝一杯绿茶" / "每天喝绿茶"）0.946；最高的非重复全是冲突或变化（Auckland / Wellington 0.848、准备 / 通过 AWS 考试 0.829、北京 / 上海 0.773）。所以默认 0.92：高于所有冲突对，低于真重复；阈值放到 0.80–0.85 会把冲突送给模型判断"是否同一件事"，判错就把矛盾合成一条。证据很薄（只有一对真重复），换模型或有了真实数据要重看。
-  - 这次扫描的另一个用处：五个配置实际行为相同（都没合并），它们之间的差异就是同一配置重跑的噪声——该忘没忘 2–4/7、hit@3 8–10/11、每次写入 7.9–73.9 秒。一次运行差一两条不能下结论。
-  - 自己发现的：写入时 `expires_at` 已过的记忆让 `maintain` 违反 `valid_to >= valid_from` 检查、整次运行失败（CLI 测试撞出来的）——改为写入时拒绝，关闭时间也不早于 `valid_from`；eval 遇到 Ollama 偶发的 500（今天 12 次，S7 之前就有）整次中断、结果全丢——单次调用失败记一次 error，继续跑。
-  - /simplify 后：Merge 并进 Add（`replaces` 是 0..n 个 id，`closes_as` 是 SUPERSEDE 或 MERGE），新记忆的构造只有一处（`_new_memory`），派生事实继承哪些字段只有一条规则（`_inherit`；原来三处各不相同，合并或拆出 remainder 会把会过期的记忆变成永久的）；派生事实的筛查只有一个入口（`_screened`）；`_embedded` 泛型化，去掉断言；`now` 每次 `maintain` 只取一次；遗忘的类型改为"配了半衰期的类型"；提示词里的记忆列表只有一个写法（`prompts.listed`）；合并提示词只允许"同一事实"，不再把不同的事实拼成一条（会重新制造 S6 的复合事实问题）；eval 的 Variant 显式带 maintain 开关，计数改名 `closed`。没做：每条记忆一次相似查询改成一条 SQL 自连接（离线、每个用户几秒，慢了再改）；把 maintenance 移出 engine.py（大量用到引擎的私有方法，拆开更糟）；按游标拉取事件的接口（S9 定）。
-  - Codex：High 合并写入时只做了不加锁的检查、没核对来源仍在同一 scope、两次 `maintain` 并发会把同一组合并两次——改为写入事务里按 id 顺序加锁、复查（仍有效、同一 scope），不符合就跳过这一组；High profile 可以被配置成参与合并、丢掉 key——配置拒绝 `profile`，合并按类型分组；Medium 已过期但未关闭的记忆仍能被 `update` 等写操作当作当前——"当前"统一为 `Memory.holds_at`，profile 的旧值过期后写新值记 EXPIRE 而不是 SUPERSEDE；Medium 写入时已过期的 `expires_at`——拒绝；Medium 过期时未加锁——加锁复查。都先有失败的测试（变异检查）。不改：`keep` 策略下合并结果可能带出秘密——`keep` 是运营方明确的选择，模型生成的合并也照它办；性能——见上。
-- **S7b（2026-11-12）**：`SqliteStore`（extra `sqlite`，sqlite-vec 0.1.9），`LITEMEM_DATABASE_URL=sqlite:///<文件>` 选用；做法见 §4。验收：测试的 `store` fixture 参数化成 PG 和 SQLite，所有 store 层的测试（写入、取代、幂等、并发、故障注入、检索、BM25 与 `keyword.py` 逐项相等、过期、合并、敏感信息）在两个 store 上都跑；只依赖 PG 本身的（HNSW 扫描、CLI 和 eval 的 schema、psycopg 连接）用 `pg_store`。另有 SQLite 的端到端测试（真实 factory 和 CLI，只换 embedding）。
-  - 自己发现的：SQLite 下测试偶发失败——`uuid7()` 在同一毫秒内的两个 id 顺序随机，而列表在时间相同时按 id 排序；PG 每次写入都有网络往返，很少落在同一毫秒，所以一直没暴露。`uuid7()` 改成单调（RFC 9562 §6.2 方法 3：毫秒 + 74 位计数器，同一毫秒或时钟回拨时加一），先有失败的测试；修完 SQLite 那一半连跑八次都绿。
-  - /simplify 后：scope 隔离规则（`own_rows`）、namespace 绑定检查（`check_binding`）、列清单（`MEMORY_COLUMNS`）两个 store 共用；SQLite 带共享记忆时改成两次索引查找（`EXPLAIN QUERY PLAN` 证实原来的 `ns AND (own OR shared)` 会扫整个 namespace）；合并分组时每次相似查询一个短事务（SQLite 每个事务都持写锁，一整轮分组会让所有读写排队）；uuid7 简化成（毫秒，计数器）；测试的 helper 收拢、类型标注改成 `Store`；CLI 和 factory 共用 `is_sqlite`。没做：只读事务用 `BEGIN DEFERRED`（要改 Store 接口，合并分组改成短事务后收益很小）；`erase` 里清 `superseded_by` 的那句（公开 API 不会产生跨用户的链接，取代只在同一 scope 内，两个 store 都只是防御）。
-  - Codex：P1 SQLite 的 metadata 过滤是逐键相等，PG 是 jsonb 包含（`@>`：嵌套对象只要包含、数组只要有、`true` 不等于 `1`）——SQLite 注册一个和 jsonb 包含规则相同的函数，同一个测试在两个 store 上查；P2 `close()` 会关掉别的线程正在用的连接——等进行中的事务结束再关，之后的事务报"已关闭"；P2 不带时区的时间在 SQLite 按本机时区、在 PG 按会话时区——引擎入口拒绝（`as_of`、`expires_at`）；P2 uuid7 在时间戳上限会回绕——报错（公元 10889 年）。都先有失败的测试（变异检查）。
-- **S8（2026-11-12）**：整个引擎的收尾审查（Codex 一份、/simplify 两份，都读整个仓库，找只有放在一起才看得出的问题）。
-  - Codex：High 共享记忆的条件只看 user 和 agent 为空，只属于某个 session 的记忆会被所有 session 看到——共享要求 session 也为空（两个 store 共用一条规则）；High metadata 不过敏感信息筛查，密码放在 metadata 里会被存下来——metadata 里每个文字值都过筛（`drop` 拒绝、`mask` 打码）；Medium glob key 可以无限新建 namespace——一个服务进程最多打开 `max_namespaces` 个（默认 1000），超了 403；Medium 列表没有上限——`list_memories` 分页（库和 HTTP 一样），HTTP 默认 1000；Medium 请求大小没有上限——一次写入最多 200 条消息、每条 2 万字，在引擎里检查（库、CLI、HTTP 一致），HTTP 的 schema 也写上；Medium/Low 文档和代码不一致——改文档。都先有失败的测试。不改：`POST /v1/maintain` 对整个 namespace 返回的事件不设上限——这是运维调用，S9 按用户调用（§13）。
-  - /simplify（altitude）：HNSW 索引自 S3 起没有查询用到、却是每次写入的成本——不再建，迁移 0004 删掉旧的，维度上限从 HNSW 的 2000 放到 `vector` 的 16000（先有失败的测试）；HTTP 缺 `remember`——加 `POST /v1/memories`，S9 推送治理过的记忆用它（带幂等键）；每个 namespace 一个引擎的缓存从 server 挪到 `factory.Engines`，S9 的进程内 provider 也用它；`/v1/maintain` 直接返回引擎的 `MaintenanceReport`（原来手抄了一个一样的 schema）。
-  - /simplify（reuse / simplification）：`_write` 只收 Add、去掉没用的参数；`_closing` 去掉没用的参数；提示词文件名只在 `prompts` 定义一次；两个 LLM 客户端共用一个基类（客户端缓存、user 消息），Anthropic 的出处也用配置里的 provider；`RuleExtractor` 只有测试在用，挪到 `testing.py`；抽取的长度上限改名 `MAX_EXTRACTED_CHARS`，和引擎的 `MAX_FACT_CHARS` 分开；`FakeLLM.roles` 没人用，删掉；几处过时的注释；测试里重复的 `_current`、`_memory` 收进共享 helper。没做：engine.py（约 850 行）不拆——只有几个纯校验函数是干净的接缝，维护和推断都依赖引擎的私有方法，拆开会把唯一的写入口 `_apply` 散到几个文件；`Components` 的默认值和 `MemoryEngine` 的重复（只有一个测试 helper 用到默认值）；`MemoryEngine.health` 保留（S9 的进程内 provider 要用）；两个 store 里方言不同的 SQL 不抽象（由同一套测试保证一致）；测试里各文件自己的 `ADA` 常量保留（一行，读起来更直接）。
-  - **留到 S8b**：BM25 按 scope 统计。现在每次检索、每条待消解的事实都要按整个 namespace 算一遍统计量和文档频率，开销随 namespace 增长，而不是随用户；S9 里一个 llm-steward namespace 就是一个 lite-mem namespace，里面有很多用户。改成先物化 scope 可见的行再算（和向量检索一样），排序会变，按规则要真实模型 eval 前后对比。
-  - **留到 S9**：事件契约（时间、scope、NOOP、出处拆分）、离线变化怎么到达 llm-steward、延迟和租约——都要和 llm-steward 那边一起改，见 §13。
-- **S8b（2026-11-12）**：BM25 的统计量（N、平均长度、文档频率）改成按这次检索能返回的行算（scope 和其他过滤条件），不再按整个 namespace：一个用户的排序不受别的用户说了什么影响，开销随用户增长而不是随 namespace（S9 里一个 llm-steward namespace 有很多用户）。两个 store 都改，`keyword.py` 的说明跟着改。先有失败的测试：别的用户的 30 条"tea"按 namespace 统计会把 ADA 的排序翻过来。真实 embedding 的确定性检索检查（不经过 LLM：合成集的对话原样写入、检索每个问题）改前改后完全一样——11/11 命中，每题前五名排序相同；这份数据只有三个用户、用词几乎不重叠，所以它说明的是"没有退化"，"别人影响我的排序"由上面的测试说明。Ollama 按 KB 的规定用 `brew services run` 启动、跑完 `stop`。
-  - S8 提交后的自动安全审查：`remember` 没筛 profile key、source 和 metadata 的键名——都筛（名字里有秘密一律拒绝，打码会让名字不再指同一个东西）；namespace 上限按"试过的名字"计，打开失败的名字也占位——只计成功打开的；`RememberIn` 的 key、source 没有长度上限——200 和 1000。都先有失败的测试。
-  - Codex：P1 派生事实（抽取器、合并、remainder）只筛内容——改成和调用方的事实走同一套筛查（`_stated_fact`），会被拒绝的派生事实直接丢掉；P2 打开失败时删掉锁，可能让等锁的线程和新来的线程各拿一把锁、同时建同一个 namespace——namespace 名字在拿锁之前校验，锁从不删除。都先有失败的测试（变异检查）。S8b 提交后的自动安全审查：namespace 上限只计已打开的，同时打开几个新名字时都能先通过检查——打开中的也计入（先占名额，失败退还），并发测试先红后绿。不改：P2 两个 store 在分数恰好落在第 9 位小数的舍入中点时可能排序不同（PG 先把 float 转 numeric 再舍入，Python 对 float 舍入）——要同时恰好在中点又恰好并列，实际不会发生，为此统一舍入规则得不偿失。
-- **S9（2026-11-12）**：llm-steward 的 `LiteMemProvider`（在 llm-steward 仓库：`providers/litemem.py`，HTTP 默认、进程内可选，合约测试在真 lite-mem 上跑）。S9 开始前要定的三件事，定得尽量小，两边的事件契约都不用扩：(1) 引擎消解冲突，llm-steward 镜像它的决定：SUPERSEDE 作为带 `replaces` 的 ADD、DELETE 照旧，在一个治理事务里取代或退役镜像，不再跑 llm-steward 自己的补偿；(2) 不在 llm-steward 的 namespace 上跑 `maintain`（生效期和审核归 llm-steward），所以 MERGE / EXPIRE 不会出现，事件游标留到以后；(3) 延迟和 llm-steward worker 的 30 秒上限：靠幂等键而不是延长租约——推断写入带批次最后一个 episode 的 id，超时的调用在 lite-mem 里照样提交，重试直接重放；Syncer 推送治理过的记忆用 `remember`（键是 llm-steward 的记忆 id）。lite-mem 这边代码不用改（`remember`、深度健康检查、列表分页、`factory.Engines` 在 S8 都已备好）。
-  - 用真 qwen3 手动走一遍（lite-mem 在 8710，llm-steward 用临时 SQLite）时发现两处，各自先写了失败的测试：(a) lite-mem：一条原子的 "Lives in Wellington" 被取代时，模型给了 remainder "Works as a nurse"——它从没说过、而且已经单独存着，于是存了两遍。代码决定：remainder 至少一半的词要出现在旧事实里，并且不能和这个 scope 已有的相关记忆或新事实本身重复。(b) llm-steward：第一段对话的任务超时（第一次调用要加载模型）后，第二段先处理完（lite-mem 已把第一段的城市取代），第一段重试时 lite-mem 按键重放它当时的 ADD，llm-steward 就把一条 lite-mem 已经不再持有的事实镜像成了有效记忆。修在 llm-steward：引擎会消解冲突时，只镜像引擎仍持有的事实，不管任务按什么顺序完成，镜像都等于引擎当前的状态。也顺带看到：本机的应用 schema 还没迁移就起了服务，lite-mem 返回 500，llm-steward 正确地记为不可用并重试（Docker 镜像启动时会自己迁移）。
-- **S10 门槛（2026-11-12，只测量、没改代码）**：两跳问题要不要记忆图谱。数据 `eval/multihop.json`：两个虚构用户（英文、中文）各 30 条原子记忆、各 10 个问题，每题要两条记忆——一条说"谁/什么是我的 X"，另一条说 X 的事、但不重复"我的 X"（"Lily is my older sister." + "Lily works as a pharmacist at the night clinic."）。记忆原样写入（不经过模型），bge-m3，SQLite；脚本 `eval/multihop.py`，结果 `eval/results/2026-11-12-s10-multihop.json`。
-  - 基线：两条都进前 k 的 top 3 / 5 / 10 是 13 / 13 / 14（共 20）；第一跳 19/20，第二跳只有 14–15。漏掉的都是第二跳：问题里没有它的词，而"My …"开头的其他记忆在向量和 BM25 上都更像问题，top 10 也挤不进去（每个用户才 30 条）。缺口是真的。
-  - 不建图的做法先试：第二轮用第一轮前 m 条命中的原文各检索一次（各取前 3），排在第一轮前 k/2+1 条之后。k=5、m=1 就到 19/20（m=2、k=10 也是 19）。剩下那题第二轮里 "Biscuit is Lily's puppy" 排在 pharmacist 前面；只用名字 "Lily" 检索它就进前 3——按实体名追一轮比按整句好。
-  - 决定：**图谱暂不做**。图谱在这里做的事（从"我的姐姐"走到"Lily"再到 Lily 的事）二轮检索已经做到大部分，而且不用在写入时抽实体和关系、不用新表、不用处理实体合并；第一轮的前 k/2+1 条不变（k=5 即前 3，单跳的 hit@3 不会变；第 4、5 名可能被换掉）。代价：每次检索多 m 次 embedding。
-  - 证据薄：20 题、合成、两跳的连接都是一个名字；三跳、同名不同人、代词指代没测。
-  - **S10 实现（同日，owner 定"按你觉得好的方式做"）**：`search(..., follow_up=N)`，库、HTTP（`follow_up`）、CLI（`--follow-up`）都有，默认关闭（§5）。先比了第二轮用什么去搜（临时脚本，k=5）：整句 19/20；只用**命中里问题没有的词**（"Lily is my older sister" 减去 "where does my sister work" 剩 "lily is older"）20/20——不用在写入时抽实体，中英文同一套分词。实现后用 `eval/multihop.py --follow-up` 复测：k=5 关 13/20、`follow_up=1` 20/20、`=2` 20/20；k=3 时 19/20；k=10 20/20。单跳不退化：S5 合成集的确定性检索检查 hit@3、hit@5 在 `follow_up` 0 / 1 / 2 下都是 11/11。保留第一轮的"前一半"用向上取整（k 为奇数时和测量时的 k/2+1 一样；k=2 时原规则会把位置占满、二轮的命中进不来，HTTP 测试撞出来的）。小 scope 里"is"这类词在剩下的词里也算数，只有三五条记忆时 BM25 区分不出来——测试数据因此用了和引擎测试一样的一组记忆；真实规模（30 条）没有这个问题。默认值不改：二轮多一次 embedding 和一个读事务，要不要开由调用方决定；llm-steward 的 `LiteMemProvider` 暂时不开（它的检索在治理层做融合，要不要用另说）。
-  - /simplify 后：触发访问计数只有一处（`_touched`）；二轮拆成 `_probes`（取词、一次批量 embedding，在事务外）和 `_followed`（合并，规则写成合约：第一轮的前一半不动，单跳的答案不会因为开了二轮而往下掉）；去掉每个元素都重建一次的 id 集合。没做：二轮的词去掉"is"这类在 scope 里很常见的词（用 IDF 判断，要改 store、要重测；20/20 已经够了）；用 RRF 融合两轮（会失去"前一半不动"的保证）；二轮少取候选（扫描本身省不掉，可能影响召回，没测量不改）；三个测试共用一组"姐姐"数据（各自要的第二跳句子不同）。代价：`follow_up=3` 大约是普通检索的 4 倍工作量，默认关闭、上限 3，可以接受。
-  - Codex：High 第一轮的结果在第一个事务里取出、在第二个事务之后原样返回，中间的 embedding 调用期间被删掉或取代的记忆照样返回——第二个事务里用已有的问题向量重排第一轮，先有失败的测试（embedding 调用时删掉一条）。另加二轮也遵守 metadata 过滤的测试（变异检查：二轮去掉过滤就红）。不改：Medium "没给出词的种子可能被当成新命中返回"——`seen` 按 follow_up 的个数取，所有种子都在里面，Codex 把它当成了 probe 的个数；Medium HTTP schema 加范围——试了，schema 报 422、引擎报 400，同一个参数两种状态码，撤回，和 `top_k` 一样只在引擎检查（测试覆盖 -1、4、大于 top_k 都是 400）；Low CLI 提前校验——引擎给出同样的错误。
+    Conclusions: conflict resolution is what keeps "a changed fact does not leave the old value" (mem0 kept all 7, lite-mem with thinking on kept only 1/7); with thinking off qwen3 makes resolution mistakes (it judged "lives in Shanghai" a duplicate of "lives in Beijing" and dropped it); a short extraction prompt is better for a model that does not think; every system (mem0 included) stored the bank card password; NOOP leaves no event, so you cannot find out why a fact was dropped. The defaults are not changed (one run and 19 checks are not enough to change a default), the terse prompt waits for a second run to confirm.
+  - Follow-ups added from this: filter sensitive information in code before writing, not by prompt; record NOOP decisions in the write result (when S9 fixes the event contract); re-run after S7 adds consolidation.
+  - Found by ourselves: mem0 2.2.1 with the ollama embedder needs the `ollama` package but does not declare the dependency, so the first long run crashed at mem0 initialisation 12 minutes after lite-mem finished and all results were lost: `ollama==0.6.3` was added to the eval dependencies, and the run now initialises mem0 first (covered by a test); the CI test database password is `postgres`, and the redacted `postgresql://postgres:***@` always contains it, so the assertion "the output has no password" must fail: CI switched to a password that cannot appear in the output by coincidence (`363b770`).
+  - Codex: P1 the stale scoring let the old value pass as soon as the memory mentioned the new value ("住 Auckland 和 Wellington" (lives in Auckland and Wellington) does not count as stale): `unless` changed to wording meaning "the old value is in the past" (moved from, 以前 (before), used to), red then green; P1 the mem0 comparison deleted data by a fixed user id in a fixed `mem0_eval`, which could delete someone else's: each run uses its own collection and history directory and at the end deletes only its own; P2 `get_all` is capped at 1000, and `MEM0_DIR` reused an old history: solved together with the previous item; P2 a role's `reasoning` could not be cleared back to the endpoint default: added `"default"`.
+  - After /simplify: the mem0 comparison's model, endpoint and dimension are now read from `Settings` (before they were hard-coded, and "the same local model" was just a coincidence); `--out` records the dataset sha256, the git sha, each system's settings (without the database URL, secrets masked) and the results, so a number in the KB can be traced back to that run; `Report` carries k, the ratios share one function, and the CLI reuses `_engine`. Not done (left for S7, when the `maintain` interface is fixed): conversations carrying times, a maintain hook on `System`, merge counts and model calls per write in `Report`; splitting scoring into a replaceable `Scorer` (keywords / LLM judge, needed when LoCoMo is connected); putting variants in the data file and overriding settings from the command line (needed for threshold sweeps); running per user concurrently (depends on whether Ollama runs in parallel).
+- **S5b (2026-11-12)**: `sensitive.py` uses rules in code to recognise passwords / PINs / verification codes (a value with digits after a keyword, which may be split into several parts by spaces), bank card numbers (card network prefix + Luhn check, except where preceded by order, waybill or invoice labels), ID numbers (check digit), and common API keys; `LITEMEM_PIPELINE__SENSITIVE` = `drop` (default) | `mask` | `keep`. Facts the engine derives itself (extraction results, messages stored verbatim with `infer=false`) are dropped or masked when they contain sensitive content; facts the caller gives explicitly (`remember`, `update`) return `InvalidRequest` under `drop`, so the caller knows nothing was stored; the reason of every event is always masked (the reason is free text and is not rejected); logs record only the type and count. Re-run on the real model (`eval/results/2026-11-12-s5b.json`, `add_only` and `terse_prompt`): the bank card password no longer becomes a memory, and the other checks are level with S5.
+  - Trade-off: a password without digits ("密码是 tiger" (the password is tiger)) is not recognised: recognising it would hit ordinary facts such as "forgot her password"; recognition relies on rules, not model judgement (model judgement can later supplement `mask`, but cannot replace the rules).
+  - Codex: High a value with spaces ("PIN 是 4829 1038" (the PIN is 4829 1038)) was missed: the value may be followed by up to three digit-bearing fragments; High `update`'s reason went into the history verbatim: the reason of every event is now masked in `_apply`, which also covers the resolution reasons written by the model; Medium an order number that passes Luhn was treated as a card number: added the card network prefix, and excluded digits preceded by order / waybill / invoice labels; Medium the overlap check was quadratic: changed to per-character marking, and the test uses twenty thousand matches with a 5-second limit (the quadratic implementation takes over seven seconds). Every one had a failing test first.
+  - /simplify: done by ourselves (the diff is about 150 lines of production code): the `keep` decision is pulled into a `_secrets` helper; the `Policy` type is reused in config instead of writing the Literal twice.
+- **S6 (2026-11-12)**: the FastAPI service (`litemem serve`, extra `server`, `127.0.0.1:8710`). API keys are in config (`LITEMEM_SERVER__API_KEYS`, only the sha256 is stored, generated by `litemem key new`, the token is shown only once), limited to namespaces by glob (request header `X-LiteMem-Namespace`, default `LITEMEM_NAMESPACE`); without keys the service serves only directly connected loopback clients, and `serve` refuses to bind any other address; errors are always Problem Details, upstream errors are only logged (redacted) and not returned, and validation errors do not echo the input; `Idempotency-Key`; `/health` checks only the database (for frequent probes) and `/health?deep=true` also makes one embedding call (used by S9's provider). The store, embedding and LLM clients are built only once (`factory.Components`), with one light engine per namespace. A Dockerfile (non-root), `deploy/compose.yaml` (with its own PG, Ollama on the host, the whole `.env` passed into the container), and CI that builds and starts the image. Acceptance: after `docker compose up`, curl exercised 401 / 403, add → search → history, and replay of the same idempotency key, and the library's CLI in the container read the same results; writing "moved to Auckland" with the real qwen3 was judged SUPERSEDE (91 seconds).
+  - Found during acceptance: what was superseded was a compound fact ("住 Wellington，是护士" (lives in Wellington, is a nurse)), and when the whole row was invalidated "nurse" was lost with it. Facts must be split more atomically, or the unchanged part must be kept on supersede: put into S7.
+  - After /simplify: shared components (before, each namespace had its own set of HTTP clients and a dimension probe, and the global lock was held while building an engine, so the first use of a namespace would block all requests): changed to `Components` + a per-namespace lock, with already-built ones read without a lock; the health check does not go through a namespace, so Docker's probe every 10 seconds no longer makes an embedding call (before, it kept Ollama from ever unloading the model); the Store gets `ping()`; the custom `Problem` exception is removed in favour of `HTTPException`; the namespace check is now one straight line (a missing namespace is always 400); compose passes the whole `.env` with `env_file` (before, only a few variables were listed, and other settings silently had no effect in the container); CI not only builds the image but also starts it; the fake engine in tests is folded into one helper. Not done: the service opens only existing namespaces (in S9 llm-steward's namespaces are dynamic, and the key's glob is the authorisation boundary); a configurable connection pool size (transactions are very short, and at this scale it would only queue); Docker / CI layer caching (small gain).
+  - Codex: High with no key configured the direct peer was trusted, and a reverse proxy on the same machine would make every request look like it came from loopback: with no key configured, requests with `Forwarded` / `X-Forwarded-For` / `X-Real-IP` are always rejected, and putting it behind a proxy requires configuring a key; Medium unexpected exceptions bypassed Problem Details: added a catch-all handler that returns a generic 500, with the log redacted. All had a failing test first (mutation check: remove the code and the test goes red).
+  - Automatic security review after the commit: with no key configured, a web page in a browser on the same machine could use DNS rebinding to send requests to `127.0.0.1:8710`: with no key configured, the Host must also be a loopback name (`localhost`, `127.0.0.1`, `[::1]`), and requests carrying `Origin` (sent by browsers) are rejected.
+- **S7 (2026-11-12)**: expiry (read queries exclude by the engine clock, `maintain` records EXPIRE at the expiry time), merge (the `consolidate` role, same scope, same type), summarising and forgetting (off by default), the `remainder` of compound facts, `litemem maintain` and `POST /v1/maintain`, `maintain` returning events, the eval's maintain hook; rules are in §6, and llm-steward's mapping is in §10.
+  - Merge threshold: on the final code, the baseline plus four thresholds 0.80 / 0.85 / 0.90 / 0.95 were run (`eval/results/2026-11-12-s7-merge.json`), and **none of the four merged a single memory**: the duplicates in the synthetic set were already judged NOOP by the resolver at write time, so the sweep cannot set a threshold. Instead the pairwise bge-m3 similarity between the memories of `add_only` (no resolution, all duplicates kept) was examined directly: the only real duplicate pair ("每天早上喝一杯绿茶" (drinks a cup of green tea every morning) / "每天喝绿茶" (drinks green tea every day)) is 0.946; the highest non-duplicates are all conflicts or changes (Auckland / Wellington 0.848, preparing for / passing the AWS exam 0.829, Beijing / Shanghai 0.773). So the default is 0.92: above every conflict pair and below the true duplicate; a threshold of 0.80–0.85 would send conflicts to the model to judge "is it the same thing", and a wrong judgement would merge a contradiction into one memory. The evidence is thin (only one real duplicate pair) and must be looked at again when the model changes or real data exists.
+  - Another use of this sweep: the five configs behaved identically (none merged), so the differences between them are the noise of re-running the same config: forgotten-but-not 2–4/7, hit@3 8–10/11, 7.9–73.9 seconds per write. A difference of one or two items in one run proves nothing.
+  - Found by ourselves: a memory whose `expires_at` had already passed at write time made `maintain` violate the `valid_to >= valid_from` check and fail the whole run (hit by a CLI test): changed to reject at write time, and the close time is also not earlier than `valid_from`; when the eval hit Ollama's occasional 500 (12 times today, already present before S7) the whole run aborted and all results were lost: a single failed call now records one error and the run continues.
+  - After /simplify: Merge is folded into Add (`replaces` is 0..n ids, `closes_as` is SUPERSEDE or MERGE), a new memory is built in only one place (`_new_memory`), and there is only one rule for which fields a derived fact inherits (`_inherit`; before, the three places all differed, and a merge or a split-off remainder would turn an expiring memory into a permanent one); screening of derived facts has a single entry (`_screened`); `_embedded` is made generic and the assertion removed; `now` is taken only once per `maintain`; the forgetting types are now "the types with a half-life configured"; the memory list in prompts has only one way of being written (`prompts.listed`); the merge prompt allows only "the same fact" and no longer joins different facts into one (which would recreate S6's compound-fact problem); the eval's Variant carries the maintain switch explicitly, and the count is renamed `closed`. Not done: turning one similarity query per memory into a single SQL self-join (offline, a few seconds per user, change it if it gets slow); moving maintenance out of engine.py (it uses many of the engine's private methods, and splitting is worse); an interface that pulls events by cursor (S9 decides).
+  - Codex: High the merge write did only an unlocked check and did not verify that the sources were still in the same scope, so two concurrent `maintain` runs would merge the same group twice: changed to lock in id order inside the write transaction and re-check (still valid, same scope), skipping the group if not; High a profile could be configured to take part in merging and lose its key: config rejects `profile`, and merge groups by type; Medium an expired but unclosed memory could still be treated as current by write operations such as `update`: "current" is unified as `Memory.holds_at`, and when a profile's old value has expired, writing the new value records EXPIRE instead of SUPERSEDE; Medium an `expires_at` already past at write time: rejected; Medium no lock at expiry time: lock and re-check. All had a failing test first (mutation check). Not changed: under the `keep` policy a merge result may carry a secret: `keep` is the operator's explicit choice, and model-generated merges follow it too; performance: see above.
+- **S7b (2026-11-12)**: `SqliteStore` (extra `sqlite`, sqlite-vec 0.1.9), chosen with `LITEMEM_DATABASE_URL=sqlite:///<file>`; the approach is in §4. Acceptance: the tests' `store` fixture is parametrised over PG and SQLite, and all store-layer tests (write, supersede, idempotency, concurrency, fault injection, search, BM25 equal to `keyword.py` term by term, expiry, merge, sensitive information) run on both stores; only those that depend on PG itself (HNSW scan, the CLI's and eval's schema, the psycopg connection) use `pg_store`. There is also an end-to-end SQLite test (the real factory and CLI, only the embedding swapped).
+  - Found by ourselves: tests failed occasionally under SQLite: two ids from `uuid7()` within the same millisecond come in random order, while the list sorts by id when times are equal; PG has a network round trip on every write, so two writes rarely land in the same millisecond and this was never exposed. `uuid7()` was made monotonic (RFC 9562 §6.2 method 3: milliseconds + a 74-bit counter, incremented within the same millisecond or when the clock goes backwards), with a failing test first; after the fix the SQLite half passed eight runs in a row.
+  - After /simplify: the scope isolation rule (`own_rows`), the namespace binding check (`check_binding`) and the column list (`MEMORY_COLUMNS`) are shared by the two stores; for SQLite with shared memories it became two index lookups (`EXPLAIN QUERY PLAN` confirmed the old `ns AND (own OR shared)` would scan the whole namespace); during merge grouping each similarity query is a short transaction (every SQLite transaction holds the write lock, and one long grouping round would queue every read and write); uuid7 simplified to (milliseconds, counter); the test helpers are consolidated and the type annotation changed to `Store`; the CLI and factory share `is_sqlite`. Not done: a `BEGIN DEFERRED` for read-only transactions (needs a Store interface change, and after merge grouping became short transactions the gain is very small); the line in `erase` that clears `superseded_by` (the public API cannot create cross-user links, supersede happens only within one scope, and in both stores it is only defensive).
+  - Codex: P1 SQLite's metadata filter was key-by-key equality while PG's is jsonb containment (`@>`: a nested object only needs to be contained, an array only needs to have the element, `true` does not equal `1`): SQLite registers a function with the same rules as jsonb containment, and the same test checks both stores; P2 `close()` would close a connection another thread was using: it now waits for in-progress transactions to finish before closing, and later transactions report "closed"; P2 a time without a timezone is read in the machine's timezone under SQLite and the session's timezone under PG: rejected at the engine entry (`as_of`, `expires_at`); P2 uuid7 wraps around at the timestamp limit: raises an error (the year 10889). All had a failing test first (mutation check).
+- **S8 (2026-11-12)**: close-out review of the whole engine (one from Codex, two from /simplify, all reading the whole repo, looking for problems visible only when taken together).
+  - Codex: High the shared-memory condition looked only at user and agent being empty, so a memory belonging to one session was seen by all sessions: shared now requires session to be empty too (one rule shared by the two stores); High metadata was not screened for sensitive information, so a password put in metadata would be stored: every text value in metadata goes through screening (`drop` rejects, `mask` masks); Medium a glob key can create unlimited namespaces: one service process opens at most `max_namespaces` (default 1000), and beyond that it is 403; Medium no limit on the list: `list_memories` is paged (the same in library and HTTP), HTTP default 1000; Medium no limit on request size: one write takes at most 200 messages, each at most 20,000 characters, checked in the engine (the same in library, CLI and HTTP), and also written into the HTTP schema; Medium/Low documentation and code disagree: documentation changed. All had a failing test first. Not changed: no limit on the events `POST /v1/maintain` returns for a whole namespace: it is an operations call, and S9 calls it per user (§13).
+  - /simplify (altitude): the HNSW index had no query using it since S3 but was a cost on every write: no longer built, migration 0004 drops the old one, and the dimension cap goes from HNSW's 2000 to `vector`'s 16000 (failing test first); HTTP lacked `remember`: added `POST /v1/memories`, which S9 uses to push governed memories (with an idempotency key); the per-namespace engine cache moved from the server to `factory.Engines`, which S9's in-process provider also uses; `/v1/maintain` returns the engine's `MaintenanceReport` directly (before, an identical schema was copied by hand).
+  - /simplify (reuse / simplification): `_write` takes only Add and an unused parameter is gone; `_closing` loses an unused parameter; the prompt file names are defined in one place only, in `prompts`; the two LLM clients share a base class (client cache, user message), and Anthropic's provenance also uses the provider in config; `RuleExtractor` is used only by tests, so it moved to `testing.py`; the extraction length cap is renamed `MAX_EXTRACTED_CHARS`, separate from the engine's `MAX_FACT_CHARS`; `FakeLLM.roles` was unused and is deleted; a few outdated comments; the duplicated `_current` and `_memory` in tests are folded into shared helpers. Not done: engine.py (about 850 lines) is not split: only a few pure validation functions are a clean seam, and maintenance and inference both depend on the engine's private methods, so splitting would scatter the single write entry `_apply` across several files; the defaults of `Components` duplicate those of `MemoryEngine` (only one test helper uses the defaults); `MemoryEngine.health` is kept (S9's in-process provider needs it); the dialect-specific SQL in the two stores is not abstracted (the same tests keep them consistent); the per-file `ADA` constants in tests are kept (one line, more direct to read).
+  - **Left for S8b**: BM25 statistics per scope. Now every search, and every fact waiting to be resolved, computes the statistics and document frequencies over the whole namespace, so the cost grows with the namespace rather than with the user; in S9 one llm-steward namespace is one lite-mem namespace with many users in it. Change it to materialise the rows visible to the scope first and then compute (like vector search); the ranking will change, and by the rules a before-and-after real-model eval is needed.
+  - **Left for S9**: the event contract (time, scope, NOOP, provenance split), how offline changes reach llm-steward, latency and leases: all of them have to change together with the llm-steward side, see §13.
+- **S8b (2026-11-12)**: BM25 statistics (N, average length, document frequency) are now computed over the rows this search can return (scope and other filters), no longer over the whole namespace: one user's ranking is not affected by what other users said, and the cost grows with the user rather than the namespace (in S9 one llm-steward namespace has many users). Both stores changed, and the note in `keyword.py` changed with them. A failing test first: another user's 30 "tea" memories, under namespace statistics, flip ADA's ranking. A deterministic search check with real embeddings (not through the LLM: the synthetic set's conversations written verbatim and every question searched) is exactly the same before and after the change: 11/11 hits, with the same top-five order for every question; this data has only three users and almost no overlapping vocabulary, so it shows "no regression", and "other people affecting my ranking" is shown by the test above. Ollama was started with `brew services run` and stopped (`stop`) after the run, as the KB requires.
+  - Automatic security review after the S8 commit: `remember` did not screen the profile key, source or metadata key names: all are screened now (a secret in a name is always rejected, because masking would make the name no longer refer to the same thing); the namespace cap counted "names tried", so a name that failed to open also took a slot: now only successful opens count; `RememberIn`'s key and source had no length limit: 200 and 1000. All had a failing test first.
+  - Codex: P1 derived facts (extractor, merge, remainder) were screened only on content: they now go through the same screening as the caller's facts (`_stated_fact`), and a derived fact that would be rejected is simply dropped; P2 deleting the lock when opening failed could let a thread waiting on the lock and a newly arriving thread each get a lock and build the same namespace at the same time: the namespace name is validated before taking the lock, and the lock is never deleted. All had a failing test first (mutation check). Automatic security review after the S8b commit: the namespace cap counted only opened ones, so when several new names were opened at once they all passed the check first: those being opened are counted too (take the slot first, give it back on failure), and the concurrency test went red then green. Not changed: P2 the two stores may order differently when a score falls exactly on the rounding midpoint of the 9th decimal (PG first converts float to numeric and then rounds, Python rounds the float): it would have to be exactly at the midpoint and exactly tied at the same time, which does not happen in practice, and unifying the rounding rule for it is not worth it.
+- **S9 (2026-11-12)**: llm-steward's `LiteMemProvider` (in the llm-steward repo: `providers/litemem.py`, HTTP by default, in-process optional, contract tests run on a real lite-mem). Three things had to be decided before S9 started, kept as small as possible so neither side's event contract has to grow: (1) the engine resolves conflicts and llm-steward mirrors its decisions: SUPERSEDE as an ADD carrying `replaces`, DELETE as before, superseding or retiring the mirror in one governance transaction, and llm-steward's own compensation no longer runs; (2) `maintain` is not run on llm-steward's namespace (validity periods and review belong to llm-steward), so MERGE / EXPIRE do not appear, and the event cursor is left for later; (3) latency and the llm-steward worker's 30-second limit: rely on the idempotency key rather than extending the lease: an inference write carries the id of the last episode in the batch, a call that timed out still commits in lite-mem, and the retry simply replays; the Syncer pushes governed memories with `remember` (the key is llm-steward's memory id). No code changes are needed on the lite-mem side (`remember`, the deep health check, list paging and `factory.Engines` were all ready in S8).
+  - Two problems turned up when walking through it by hand with the real qwen3 (lite-mem on 8710, llm-steward on a temporary SQLite), each with a failing test written first: (a) lite-mem: when an atomic "Lives in Wellington" was superseded, the model gave the remainder "Works as a nurse", which it had never said and which was already stored separately, so it was stored twice. Code decides: at least half of the remainder's words must appear in the old fact, and it must not duplicate related memories already in this scope or the new fact itself. (b) llm-steward: after the first conversation's task timed out (the first call had to load the model), the second was processed first (lite-mem had already superseded the first one's city), and when the first was retried lite-mem replayed the ADD from that time by key, so llm-steward mirrored a fact that lite-mem no longer holds as a valid memory. Fixed in llm-steward: when the engine resolves conflicts, only facts the engine still holds are mirrored, so whatever order the tasks finish in, the mirror equals the engine's current state. Also seen along the way: the service was started before this machine's application schema had been migrated, lite-mem returned 500, and llm-steward correctly recorded it as unavailable and retried (the Docker image migrates itself at startup).
+- **S10 gate (2026-11-12, measured only, no code changed)**: whether two-hop questions need a memory graph. The data is `eval/multihop.json`: two fictional users (English, Chinese) with 30 atomic memories each and 10 questions each, every question needing two memories: one says "who/what is my X", the other says something about X without repeating "my X" ("Lily is my older sister." + "Lily works as a pharmacist at the night clinic."). Memories are written verbatim (not through the model), bge-m3, SQLite; script `eval/multihop.py`, results `eval/results/2026-11-12-s10-multihop.json`.
+  - Baseline: both memories in the top k at top 3 / 5 / 10 is 13 / 13 / 14 (out of 20); first hop 19/20, second hop only 14–15. The misses are all second hops: the question has none of its words, while other memories starting with "My …" look more like the question in both vector and BM25 terms, and it cannot even get into the top 10 (each user has only 30 memories). The gap is real.
+  - An approach without a graph was tried first: the second round searches once with the text of each of the first round's top m hits (taking the top 3 of each), placed after the first round's first k/2+1 entries. k=5, m=1 reaches 19/20 (m=2, k=10 is also 19). For the one remaining question, "Biscuit is Lily's puppy" ranks ahead of the pharmacist in the second round; searching with just the name "Lily" gets it into the top 3: following up by entity name is better than by whole sentence.
+  - Decision: **no graph for now**. What the graph would do here (go from "my sister" to "Lily" to Lily's facts) the second-round search already does for the most part, and it needs no entity and relation extraction at write time, no new table, and no entity-merge handling; the first round's first k/2+1 entries are unchanged (k=5 means the first 3, so single-hop hit@3 does not change; ranks 4 and 5 may be replaced). The cost: m extra embedding calls per search.
+  - The evidence is thin: 20 questions, synthetic, and the connection in each two-hop is a name; three hops, different people with the same name, and pronoun reference were not tested.
+  - **S10 implementation (same day, the owner said "do it the way you think is best")**: `search(..., follow_up=N)`, in the library, HTTP (`follow_up`) and CLI (`--follow-up`), off by default (§5). What to search with in the second round was compared first (a temporary script, k=5): the whole sentence 19/20; only the **words in the hit that are not in the question** ("Lily is my older sister" minus "where does my sister work" leaves "lily is older") 20/20: no entity extraction at write time, and the same tokenizer for Chinese and English. After implementation, `eval/multihop.py --follow-up` re-measured: k=5 off 13/20, `follow_up=1` 20/20, `=2` 20/20; at k=3 19/20; at k=10 20/20. Single-hop does not regress: the S5 synthetic set's deterministic search check gives hit@3 and hit@5 of 11/11 under `follow_up` 0 / 1 / 2. Keeping the first round's "first half" is rounded up (for odd k it equals the measured k/2+1; at k=2 the original rule would fill every position and the second-round hits could not get in, which an HTTP test exposed). In a small scope, words such as "is" also count among the remaining words, and with only three or five memories BM25 cannot tell them apart: the test data therefore uses the same set of memories as the engine tests; at real scale (30 memories) this problem does not exist. The default is unchanged: the second round costs one more embedding call and one read transaction, and whether to turn it on is up to the caller; llm-steward's `LiteMemProvider` does not turn it on for now (its search does fusion in the governance layer, and whether to use it is a separate matter).
+  - After /simplify: triggering the access count has only one place (`_touched`); the second round is split into `_probes` (take the words, one batch embedding, outside the transaction) and `_followed` (merging, with the rule written as a contract: the first round's first half does not move, and a single-hop answer does not drop down just because the second round is on); the id set that was rebuilt for every element is removed. Not done: dropping words such as "is" that are very common in the scope from the second round's words (judged by IDF, which needs a store change and a re-measurement; 20/20 is already enough); fusing the two rounds with RRF (it would lose the "first half does not move" guarantee); fetching fewer candidates in the second round (the scan itself cannot be saved, it might affect recall, and without measurement it is not changed); three tests sharing one set of "sister" data (each needs a different second-hop sentence). Cost: `follow_up=3` is about 4 times the work of a normal search, off by default and capped at 3, which is acceptable.
+  - Codex: High the first round's result was taken in the first transaction and returned as is after the second transaction, so a memory deleted or superseded during the embedding call in between was still returned: the first round is re-ranked in the second transaction with the question vector already in hand, with a failing test first (delete one during the embedding call). Also added a test that the second round obeys the metadata filter too (mutation check: remove the filter from the second round and it goes red). Not changed: Medium "a seed that gave no words may be returned as a new hit": `seen` is sized by follow_up and all seeds are in it, and Codex took it for the number of probes; Medium add a range to the HTTP schema: tried, the schema reports 422 and the engine reports 400, two status codes for the same parameter, so it was reverted and, like `top_k`, it is checked only in the engine (tests cover -1, 4 and greater than top_k, all 400); Low validate early in the CLI: the engine gives the same error.
 
-- **S11 评测迁到 lite-eval（2026-11-14，lite-eval 的 E4b）**：两跳评测和 LongMemEval 跑在 lite-eval 上（§8）。
-  - 两跳：`eval/multihop.json` 转成 `eval/lite-eval/datasets/multihop/`（每个用户的记忆放 `corpus/<user>.json`，用例 id `<user>:q<nn>`，期望 `{hops, answer}`）；转回去和原文件完全相同，测试用原文件的摘要钉住，改一个答案就变红。suite 有 8 组 (top_k, follow_up)，即 2026-11-12 量过的全部组合。`MultihopTarget` 在 setup 里把所有用户的记忆写一次，8 组配置共用（BM25 按 scope 统计，所以先写完所有用户再问，和原脚本逐个用户写、问的结果相同）。
-  - 等价：原脚本冻结成 `tests/legacy_multihop.py`，同一进程里对照，8 组配置每题的命中列表、hop1 / hop2 / 两跳都中完全相同；用 bge-m3（`-m ollama`）时汇总数字和 2026-11-12 的记录相同。命中规则另有 4000 个随机样例和原 `_has` 对照。改坏 8 处全部变红（不看 follow_up、少返回命中、命中规则改 casefold 或合并空白等）。
-  - LongMemEval（`eval/longmemeval.py`）：每题一个新 SQLite 库，写入这题所有 session 的用户发言（`infer=False`，带 `session_id`），问题的命中映射成 session id，按不重复的 session 算 recall@k / hit@k。输出只有 session id，运行记录里没有基准原文。三组配置：k10、k10-follow1、k50。每题的库只建一次，三组配置共用；嵌入按文本缓存（S 的 12.2 万条用户发言里不同的只有 9.4 万条，bge-m3 本机约每秒 38 条）。
-  - 官方数据每次下载到临时目录、跑完删除（owner 2026-11-14 定）。SIGTERM / SIGHUP 也走清理；SIGKILL 没法清理，下次运行开始时删掉进程已经不在的运行目录。引擎的临时库也建在这个目录里。起因：一次 S 运行我误判它已结束（`ps | rg -v rg` 把 `/Users/arthurgao` 下的进程都过滤掉了），删掉了它正在用的数据，这次运行作废、记录删除。
-  - 引擎行为（owner 2026-11-14 交给我定）：`add()` 的 `MAX_MESSAGE_CHARS`（20000）是给 `infer=True` 的，整段对话交给抽取器；`infer=False` 时每条用户消息存成一条记忆，上限是 `MAX_FACT_CHARS`（2000，先去掉首尾空白再算），超长时整批写入被拒。行为不变，只是原来没写清楚，报错也不说原因：现在写入前先检查，报错说明"infer=false 时每条用户消息存成一条记忆，最多 2000 字"；docstring 和 HTTP schema 的注释写明了两个上限（先写了失败的测试）。oracle 第一次运行有 2/470 题因此出错；适配器跳过这种发言并计数（S 里 786 条，其中 2 条在证据 session 里）。不拆分长消息：拆开就不是"原样存"了。
-  - /simplify（四个审查）采纳：`mkstemp` 漏关文件描述符（每题一个）改掉；每题的库只建一次（测试数写入次数，改坏变红）；嵌入缓存在锁外调用模型，预热不再生成用不上的列表；嵌入器只建一次；去掉多余的 `_owner`；长度检查和引擎一样先 strip；脚本用 lite-eval 的 `render_run` 报告（它会显示出错的用例，原来的报告不显示）；测试只解析一次用例。不采纳：
-    - 把向量缓存存到磁盘、长期保留：和"不在本机留数据"冲突，每次多花的嵌入时间可以接受；
-    - 两个工厂函数改成直接写类名：suite 里的名字稳定，收益小；
-    - 给组件加不带 store 的构造入口：要改 factory，这里关掉占位 store 就够了。
-  - Codex 采纳 3 条：setup 失败时删掉临时目录（先写失败的测试）；数据集钉在原文件的摘要上（上面）；建库时打开库失败也走清理（留下的只有表结构，重建结果相同，测不出差别，只改代码）。
-  - LongMemEval 结果（只测检索层，470 题，不含 30 道拒答题；详情和按类型的分数见 KB `projects/lite-mem/reference/eval-results.md`）：
-    - S：k10 的 recall@5 / recall@10 是 0.939 / 0.950；`follow_up=1` 是 0.946 / 0.954，多 session 题的 recall@5 从 0.910 升到 0.936；k50 的 recall@10 是 0.971（前 10 条记忆常常不到 10 个 session）。最弱的是 single-session-assistant（0.929）：答案在助手的回复里，助手发言不存成记忆。墙钟 39 分钟，峰值内存 0.95 GB。
-    - oracle：recall@10 0.993–0.998，只用来核对整条流程。
-    - M（每题约 500 个 session，共 114 万条用户发言）：recall@10 前 10 条记忆 0.873、前 50 条 0.891（S 是 0.950 / 0.971）。掉得最多的是 single-session-preference（0.967 → 0.767）和 multi-session（0.971 → 0.841）：只说过一次的偏好，在多 10 倍的闲聊里最难找；直接问的事实（single-session-user）不受影响。二轮检索在 M 上没有显著效果（S 上 recall@5 显著 +0.007）；前 50 条比前 10 条 recall@10 显著高 0.018。墙钟 2 小时 34 分、峰值内存 2.3 GB：各题共用的历史多，嵌入缓存省了大半。文件按题型排序，前 50 题全是 single-session-assistant，`--limit` 取的样本不代表整体。
-    - 不能直接和公开的 LongMemEval 检索分数比：那些按 session 或整轮（用户加助手）建索引，检索器也不同；这里只索引用户发言，也就是 lite-mem 不经过模型时存对话的方式。
-- **S12 迁到 lite-model（2026-11-18，lite-model 设计 §12 的第一个宿主）**：LLM 调用改由 lite-model 0.1.1 完成。
-  - `llm.py` 只留 `LLM` Protocol、`Provenance` 和 adapter `LiteModelLLM`（payload 照旧序列化成 JSON 的 user turn，
-    lite-model 的错误转成 lite-mem 的 `ModelError` / `ConfigError`，cause 保留）；删掉 `OpenAICompatibleLLM`、`AnthropicLLM`、
-    `RoutedLLM`、`strict_schema`，以及 `config.py` 的 `RoleOverride`、`ModelTarget`。`LLMConfig` 现在是 lite-model `ModelsConfig`
-    的子类，带 lite-mem 的默认值：backend 名 `openai`（历史里仍记 `openai:<model>`）、`type: openai` + `keyless`（lite-model 0.1.1
-    为此新增；不发 temperature）、Ollama `/v1`、qwen3:8b、`max_retries` 2（OpenAI 和 Anthropic SDK 的默认值都是 2）。
-    `FakeLLM` 基于 lite-model 的 `FakeModel`，来源变成 `fake:fake-model`。
-  - 请求体：迁移前用旧客户端录下 12 个请求（extract、resolve、merge、summarise × 默认 / reasoning 全局 + 单个 role
-    覆盖 / Anthropic），存在 `tests/data/llm_requests.json`；迁移后 URL、认证头、JSON body 逐字段相同（`test_llm_requests.py`）。
-  - 配置变化（owner 已知）：环境变量改成 lite-model 的形状（`__BACKEND`、`__BACKENDS`、`__ROLES` 里的 `backend`、
-    `__REASONING_EFFORT`）；旧的 `__BASE_URL`、`__API_KEY`、`__PROVIDER`、`__REASONING`、role 的 `provider` 在启动时被拒绝
-    （有测试）；key 只能通过 `api_key_env` 指向的变量给；Anthropic 要配 `max_output_tokens`（以前固定 2048）；role 的
-    `reasoning: default`（退回端点默认）没有对应，删掉（没有人用）。三个 role 都不可路由。
-  - 迁移中发现：只要配置了任何 backend，lite-model 会把内置的 `openai`（api.openai.com）合并进来，顶掉 lite-mem 的本机
-    Ollama，默认 role 的请求会离开本机。`LLMConfig` 的 before-validator 始终把本机 `openai` 放在给定的 backend 下面；
-    不带 type 的 `openai`（compose 只改它的 URL）逐字段合并。根本的做法（lite-model 让宿主设默认 backend）记在 lite-model §15。
-    2026-11-19 改用 lite-model 0.2.0 的 `host_backends`（宿主默认 backend，逐字段叠加），删掉这个 validator。行为一处不同：
-    带 `type: openai` 的 `openai` 以前整个替换本机的，现在也逐字段叠加（只有换了 type 才替换）——给全字段的配置结果一样。把 `openai` 指向要 key 的端点：0.2.0 要同时写
-    `keyless: false`，lite-model 0.2.1（同日）起只写 `api_key_env` 即可（key 的来源算一个选择；有测试）。
-    去掉 `host_backends` 有 5 个测试失败。
-  - eval（`litemem eval -v resolve -v terse_prompt`，本机 Ollama qwen3:8b，迁移前后各两次）：
+- **S11 Eval moves to lite-eval (2026-11-14, lite-eval's E4b)**: the two-hop eval and LongMemEval run on lite-eval (§8).
+  - Two-hop: `eval/multihop.json` is converted into `eval/lite-eval/datasets/multihop/` (each user's memories go in `corpus/<user>.json`, the case id is `<user>:q<nn>`, the expectation is `{hops, answer}`); converting back gives exactly the original file, and the test pins it to the original file's digest, so changing one answer turns it red. The suite has 8 (top_k, follow_up) configs, all the combinations measured on 2026-11-12. `MultihopTarget` writes all users' memories once in setup, shared by the 8 configs (BM25 counts per scope, so write all users first and then ask, which gives the same result as the original script writing and asking user by user).
+  - Equivalence: the original script is frozen as `tests/legacy_multihop.py` and compared in the same process; for the 8 configs the hit list per question, and hop1 / hop2 / both hops hit, are exactly the same; with bge-m3 (`-m ollama`) the summary numbers equal the 2026-11-12 record. The hit rule is also compared against the original `_has` on 4000 random samples. Breaking it in 8 places turned every one red (ignoring follow_up, returning fewer hits, changing the hit rule to casefold or whitespace merging, and so on).
+  - LongMemEval (`eval/longmemeval.py`): each question gets a new SQLite database, all of that question's sessions' user utterances are written (`infer=False`, with `session_id`), the question's hits are mapped to session ids, and recall@k / hit@k are computed over distinct sessions. The output has only session ids, so the run record holds no benchmark text. Three configs: k10, k10-follow1, k50. Each question's database is built only once and shared by the three configs; embeddings are cached by text (of the 122,000 user utterances in S only 94,000 are distinct, and bge-m3 on this machine does about 38 per second).
+  - The official data is downloaded to a temporary directory each time and deleted after the run (decided by the owner 2026-11-14). SIGTERM / SIGHUP also go through cleanup; SIGKILL cannot be cleaned up, so at the start of the next run, run directories whose process no longer exists are deleted. The engine's temporary database is also built in this directory. The cause: I misjudged an S run as finished (`ps | rg -v rg` filtered out every process under `/Users/arthurgao`) and deleted the data it was using; that run was voided and its record deleted.
+  - Engine behaviour (left to me by the owner 2026-11-14): `add()`'s `MAX_MESSAGE_CHARS` (20000) is for `infer=True`, where the whole conversation goes to the extractor; with `infer=False` each user message is stored as one memory, and the limit is `MAX_FACT_CHARS` (2000, after stripping leading and trailing whitespace), and when exceeded the whole batch write is rejected. The behaviour is unchanged, it was just not clearly written and the error did not say why: now it is checked before writing, and the error says "with infer=false each user message is stored as one memory, at most 2000 characters"; the docstring and the HTTP schema's comment state both limits (failing test first). In the first oracle run 2/470 questions errored because of this; the adapter skips such utterances and counts them (786 in S, 2 of them in evidence sessions). Long messages are not split: once split they are no longer "stored verbatim".
+  - /simplify (four reviews) accepted: `mkstemp` leaked a file descriptor (one per question), fixed; each question's database is built only once (the test counts writes, breaking it turns red); the embedding cache calls the model outside the lock, and warm-up no longer generates a list that will not be used; the embedder is built only once; the redundant `_owner` is removed; the length check strips first, like the engine; the script reports with lite-eval's `render_run` (which shows the cases that errored; the old report did not); the test parses the cases only once. Rejected:
+    - keeping the vector cache on disk for the long term: conflicts with "leave no data on this machine", and the extra embedding time each run is acceptable;
+    - writing the class names directly in the two factory functions: the names in the suite are stable and the gain is small;
+    - giving the components a constructor entry without a store: it needs a change in factory, and closing the placeholder store here is enough.
+  - Codex accepted 3: delete the temporary directory when setup fails (failing test first); pin the dataset to the original file's digest (above); when opening the database fails while building it, also go through cleanup (what is left is only the table structure, and rebuilding gives the same result, so the difference cannot be tested, only the code changed).
+  - LongMemEval results (search layer only, 470 questions, not including the 30 abstention questions; details and scores by type are in the KB `projects/lite-mem/reference/eval-results.md`):
+    - S: k10's recall@5 / recall@10 are 0.939 / 0.950; `follow_up=1` is 0.946 / 0.954, and multi-session questions' recall@5 rises from 0.910 to 0.936; k50's recall@10 is 0.971 (the top 10 memories often span fewer than 10 sessions). The weakest is single-session-assistant (0.929): the answer is in the assistant's reply, and assistant utterances are not stored as memories. Wall clock 39 minutes, peak memory 0.95 GB.
+    - oracle: recall@10 0.993–0.998, used only to check the whole flow.
+    - M (about 500 sessions per question, 1.14 million user utterances in all): recall@10 is 0.873 for the top 10 memories and 0.891 for the top 50 (S is 0.950 / 0.971). The biggest drops are single-session-preference (0.967 → 0.767) and multi-session (0.971 → 0.841): a preference said only once is hardest to find among 10 times as much small talk; a directly asked fact (single-session-user) is not affected. The second-round search has no significant effect on M (on S recall@5 is significantly +0.007); the top 50 is significantly 0.018 higher than the top 10 in recall@10. Wall clock 2 hours 34 minutes, peak memory 2.3 GB: the questions share a lot of history, and the embedding cache saved most of it. The file is sorted by question type and the first 50 questions are all single-session-assistant, so a sample taken with `--limit` does not represent the whole.
+    - These cannot be compared directly with published LongMemEval retrieval scores: those index by session or whole turn (user plus assistant), and the retrievers differ; here only user utterances are indexed, which is how lite-mem stores a conversation when no model is involved.
+- **S12 Move to lite-model (2026-11-18, the first host of lite-model design §12)**: LLM calls are now made by lite-model 0.1.1.
+  - `llm.py` keeps only the `LLM` Protocol, `Provenance` and the adapter `LiteModelLLM` (the payload is serialised as before into a JSON user turn,
+    lite-model's errors are turned into lite-mem's `ModelError` / `ConfigError`, with the cause kept); `OpenAICompatibleLLM`, `AnthropicLLM`,
+    `RoutedLLM`, `strict_schema`, and `config.py`'s `RoleOverride` and `ModelTarget` are deleted. `LLMConfig` is now a subclass of lite-model's `ModelsConfig`
+    with lite-mem's defaults: backend name `openai` (history still records `openai:<model>`), `type: openai` + `keyless` (added in lite-model 0.1.1
+    for this; no temperature is sent), Ollama `/v1`, qwen3:8b, `max_retries` 2 (the default of both the OpenAI and Anthropic SDKs is 2).
+    `FakeLLM` is based on lite-model's `FakeModel`, and the provenance becomes `fake:fake-model`.
+  - Request bodies: before the migration 12 requests were recorded with the old client (extract, resolve, merge, summarise × default / global reasoning + a single role
+    override / Anthropic) and stored in `tests/data/llm_requests.json`; after the migration the URL, auth header and JSON body are identical field by field (`test_llm_requests.py`).
+  - Config changes (known to the owner): the environment variables take lite-model's shape (`__BACKEND`, `__BACKENDS`, `backend` inside `__ROLES`,
+    `__REASONING_EFFORT`); the old `__BASE_URL`, `__API_KEY`, `__PROVIDER`, `__REASONING` and a role's `provider` are rejected at startup
+    (there is a test); a key can be given only through the variable `api_key_env` points to; Anthropic needs `max_output_tokens` configured (it used to be fixed at 2048); a role's
+    `reasoning: default` (fall back to the endpoint default) has no equivalent and is deleted (nobody used it). None of the three roles may be routed.
+  - Found during the migration: as soon as any backend is configured, lite-model merges in the built-in `openai` (api.openai.com), displacing lite-mem's local
+    Ollama, so the default role's requests would leave the machine. `LLMConfig`'s before-validator always puts the local `openai` underneath the given backends;
+    an `openai` without a type (compose changes only its URL) is merged field by field. The root fix (lite-model lets the host set a default backend) is recorded in lite-model §15.
+    On 2026-11-19 this switched to lite-model 0.2.0's `host_backends` (the host's default backend, layered field by field), and this validator was deleted. One behaviour difference:
+    an `openai` with `type: openai` used to replace the local one entirely, and is now also layered field by field (it replaces only when the type changes); for a config that gives every field the result is the same. Pointing `openai` at an endpoint that needs a key: 0.2.0 needs `keyless: false` written at the same time,
+    and since lite-model 0.2.1 (the same day) writing only `api_key_env` is enough (the source of the key counts as a choice; there is a test).
+    Without `host_backends`, 5 tests fail.
+  - Eval (`litemem eval -v resolve -v terse_prompt`, local Ollama qwen3:8b, two runs each before and after the migration):
 
     | | remembered | stale | hit@3 | errors |
     | --- | --- | --- | --- | --- |
-    | resolve 前 1 / 前 2 | 17 / 16 | 2 / 3 | 9 / 7 | 0 / 0 |
-    | resolve 后 1 / 后 2 | 17 / 17 | 0 / 1 | 10 / 10 | 0 / 1 |
-    | terse_prompt 前 1 / 前 2 | 18 / 18 | 1 / 1 | 11 / 11 | 0 / 0 |
-    | terse_prompt 后 1 / 后 2 | 18 / 18 | 1 / 0 | 10 / 11 | 0 / 0 |
+    | resolve before 1 / before 2 | 17 / 16 | 2 / 3 | 9 / 7 | 0 / 0 |
+    | resolve after 1 / after 2 | 17 / 17 | 0 / 1 | 10 / 10 | 0 / 1 |
+    | terse_prompt before 1 / before 2 | 18 / 18 | 1 / 1 | 11 / 11 | 0 / 0 |
+    | terse_prompt after 1 / after 2 | 18 / 18 | 1 / 0 | 10 / 11 | 0 / 0 |
 
-    请求体相同，差别来自采样：lite-mem 不发 temperature，qwen3 用自己的默认 0.6（Ollama 日志），迁移前两次的 resolve 已经差
-    1 条记住、2 条命中。后 2 的一个 error 是 Ollama 自己的 500：迁移前那段时间日志里也有 12 个 500 和多次 2 分钟超时，都被重试
-    吸收了，这次一次调用三次都失败。读了每一条没命中的：后 1 的 terse_prompt 漏掉狗的名字，后 2 又命中了。
-  - 变异：16 处（adapter 的 JSON、本机 backend 的 type、重试、合并、错误转换、来源、可路由、FakeLLM、默认模型、类型不带的
-    openai 合并、旧变量被拒绝），全部被测试抓到。
-  - /simplify（四个审查）采纳：一个 `build_model()` 给工厂、mem0 对照和测试共用；来源直接用 lite-model 的 `tag`；mem0 对照
-    没有端点时报错（不再悄悄指向 Ollama）；FakeLLM 解析 payload 只有一处；测试共用一个假的 OpenAI 回复；httpx2 只在类型检查时导入。
-    没采纳：lite-model 让宿主设默认 backend（要发 lite-model 新版，记在它的 §15）；backend 不叫 `openai`（§12 要求来源格式不变）；
-    启动时就建客户端（为的就是启动时校验）。
-  - Codex 采纳 2 条：compose 的 `environment` 盖过 `.env`，整个 `BACKENDS` 被换掉、`.env` 里另配的 backend 丢失——改成只设
-    `LITEMEM_LLM__BACKENDS__OPENAI__BASE_URL`（先写失败的测试）；`.env.example` 补 Anthropic 的 `max_output_tokens`。
-    核实后不成立：旧变量"被悄悄忽略"（实际启动时被拒绝，补了测试固定它）；fixture 里 resolve 的 reasoning 是 none（实际是
-    high）；Anthropic 重试次数变了（两个 SDK 默认都是 2）。不采纳：显式配置的 `openai` 会改掉所有 role 的端点（这是配置本来的
-    意思，和以前的 `__BASE_URL` 一样）。
-- **跨仓库体检后的修补（2026-11-20）**：整个 lite-ai 跑过一遍后对齐 lite-rag 的做法。(1) embedding 调用加重试：429、5xx 和
-  传输错误在同一个模型上重试，退避从 0.5 秒起翻倍、最多 8 秒，次数 `LITEMEM_EMBEDDING__MAX_RETRIES`（默认 4，和 lite-rag 一样）；
-  以前 Ollama 回一次 503 整次写入就失败。错误信息经过 `redact`。(2) `sensitive` 认出 lite-rag 的 `lrk_` 和 lite-mem 自己的
-  `lm_` 密钥（和 `stw_` 一样，密钥部分至少 16 个字符，可以含 `-` `_`，因为 `token_urlsafe` 会生成这两个字符）。
-  Codex 审查 lite-rag 时提出、这边同样成立的三条也一起改了（先写失败的测试）：`redact` 遮住 `Authorization: Bearer …`、
-  `api_key=`、`token:`、`secret=`；无 key 模式也拒绝 `Via`、`X-Forwarded-Host/-Proto/-Port/-Prefix`；`sensitive` 认出
-  GitHub 细粒度 token `github_pat_`。
-- **复合事实的 remainder 收紧（2026-11-20）**：跨仓库 smoke 里辞去银行工作后，"Works at a bank" 又被当 remainder 加回
-  当前记忆。用真 qwen3:8b（不思考）做了一组专门测量（scratch 脚本，8 个场景各 8 次，旧事实用 `--raw` 原样存）：4 个旧事实只说
-  一件事的场景（换工作、狗去世、猫走失、辞掉咖啡店工作）不该有 remainder，4 个复合句场景必须留下没变的部分。
-  原来坏 remainder 10/64（咖啡店 8/8："兼职做咖啡师"），只改提示词后 7/64（咖啡店 6/8），所以由代码决定：
-  (1) 只有复合句（`terms()` 里有 and / 和 / 并且 / 而且 / 同时，或有逗号、分号、顿号）才接受 remainder；
-  (2) remainder 登记为本批的事实，后面的事实能看到、能改它，本批已有的事实不再写第二遍（同一批里 "Sells Corolla" 存了两遍，2/6）；
-  (3) 提示词写明 remainder 不重复已经变了的部分（反例不用测量集里的场景）。最终坏 remainder 0/64，该留的 0/64 丢失。
-  `litemem eval -v resolve -v terse_prompt` 两次：resolve 19/19、0/7 stale、10/11，和 15/19、1/7、8/11（这一次有两段被
-  Ollama 500 打断，丢的正是那两段的事实）；terse_prompt 17/19、18/19，stale 1/7、1/7，11/11（第一次一段超时）；
-  和 S12 的范围一致（`eval/results/2026-11-20-remainder-after-{1,2}.json`）。Codex 另指出一处原有的问题：本批一条替换已存记忆
-  的事实被后面的 DELETE 拿掉后，`claimed` 还指着它，第三条再指向那条已存记忆时会落到已删除的 id 上；拿掉时一并清掉（先写失败的测试）。
-  不改：Codex 认为 DELETE 本批事实时不该再写入这条新事实——DELETE 已存记忆也是"退休旧的 + 记下新的"（"Max passed away"），保持一致。
-  没处理、记下：抽取漏掉 "My wife Anna"（6/6 只存了狗）；消解偶尔判 ADD、理由却说旧事实不再成立（1/6）。
+    The request bodies are identical, and the difference comes from sampling: lite-mem sends no temperature, qwen3 uses its own default 0.6 (Ollama log), and the two resolve runs before the migration already differed
+    by 1 remembered and 2 hits. The one error in after 2 is Ollama's own 500: in the period before the migration the log also has 12 500s and several 2-minute timeouts, all absorbed by retries,
+    and this time one call failed all three times. Every miss was read: terse_prompt after 1 missed the dog's name, and after 2 it hit again.
+  - Mutation: 16 places (the adapter's JSON, the local backend's type, retries, merging, error conversion, provenance, routable, FakeLLM, the default model, merging of an `openai`
+    without a type, rejection of the old variables), all caught by tests.
+  - /simplify (four reviews) accepted: one `build_model()` shared by the factory, the mem0 comparison and the tests; the provenance uses lite-model's `tag` directly; the mem0 comparison
+    raises an error when there is no endpoint (it no longer silently points at Ollama); FakeLLM parses the payload in only one place; the tests share one fake OpenAI reply; httpx2 is imported only for type checking.
+    Rejected: lite-model letting the host set a default backend (needs a new lite-model release, recorded in its §15); a backend not named `openai` (§12 requires the provenance format to stay the same);
+    building the client at startup (the whole point is validating at startup).
+  - Codex accepted 2: compose's `environment` overrode `.env`, replacing the whole `BACKENDS` and losing any other backend configured in `.env`: changed to set only
+    `LITEMEM_LLM__BACKENDS__OPENAI__BASE_URL` (failing test first); `.env.example` gets Anthropic's `max_output_tokens`.
+    Checked and not valid: the old variables are "silently ignored" (in fact they are rejected at startup, and a test was added to pin it); the resolve reasoning in the fixture is none (it is actually
+    high); the Anthropic retry count changed (both SDKs default to 2). Rejected: an explicitly configured `openai` changes the endpoint of all roles (that is what the config means,
+    the same as the old `__BASE_URL`).
+- **Fixes after the cross-repo health check (2026-11-20)**: after the whole of lite-ai had been run through, aligned with lite-rag's practice. (1) Embedding calls get retries: 429, 5xx and
+  transport errors are retried on the same model, with backoff starting at 0.5 seconds and doubling up to 8 seconds, the count being `LITEMEM_EMBEDDING__MAX_RETRIES` (default 4, the same as lite-rag);
+  before, one 503 from Ollama failed the whole write. Error messages go through `redact`. (2) `sensitive` recognises lite-rag's `lrk_` and lite-mem's own
+  `lm_` keys (like `stw_`, the secret part is at least 16 characters and may contain `-` and `_`, because `token_urlsafe` generates those two characters).
+  Three findings that Codex raised when reviewing lite-rag and that hold here too were changed as well (failing tests first): `redact` masks `Authorization: Bearer …`,
+  `api_key=`, `token:` and `secret=`; the no-key mode also rejects `Via` and `X-Forwarded-Host/-Proto/-Port/-Prefix`; `sensitive` recognises
+  the GitHub fine-grained token `github_pat_`.
+- **Tightening the remainder of compound facts (2026-11-20)**: in the cross-repo smoke, after quitting a bank job, "Works at a bank" was added back as a remainder into
+  the current memories. A dedicated measurement was done with the real qwen3:8b (thinking off) (a scratch script, 8 scenarios of 8 runs each, the old fact stored verbatim with `--raw`): in 4 scenarios the old fact said only
+  one thing (changing jobs, the dog died, the cat went missing, quitting the café job) and there must be no remainder, and in 4 compound-sentence scenarios the unchanged part must be kept.
+  Bad remainders were originally 10/64 (café 8/8: "兼职做咖啡师" (works part-time as a barista)), and after changing only the prompt 7/64 (café 6/8), so the code decides:
+  (1) a remainder is accepted only for a compound sentence (`terms()` contains and / 和 / 并且 / 而且 / 同时 (and / and also / at the same time), or there is a comma, semicolon or enumeration comma);
+  (2) the remainder is registered as a fact of this batch, so later facts can see it and change it, and a fact already in this batch is not written a second time ("Sells Corolla" was stored twice in the same batch, 2/6);
+  (3) the prompt states that a remainder does not repeat the part that already changed (the counter-example does not use a scenario from the measurement set). The final bad remainders are 0/64 and 0/64 lost that should have been kept.
+  `litemem eval -v resolve -v terse_prompt` twice: resolve 19/19, 0/7 stale, 10/11, and 15/19, 1/7, 8/11 (this time two conversations were interrupted by
+  Ollama 500s, and the facts lost were exactly those of the two conversations); terse_prompt 17/19, 18/19, stale 1/7, 1/7, 11/11 (one conversation timed out the first time);
+  consistent with the range in S12 (`eval/results/2026-11-20-remainder-after-{1,2}.json`). Codex also pointed out an existing problem: when a fact in this batch that replaces a stored memory
+  is taken away by a later DELETE, `claimed` still points at it, and when a third fact points at that stored memory it lands on a deleted id; it is now cleared when taken away (failing test first).
+  Not changed: Codex thought that when DELETE targets a fact of this batch the new fact should not be written any more: DELETE on a stored memory is also "retire the old + note the new" ("Max passed away"), so it is kept consistent.
+  Not handled, noted: extraction misses "My wife Anna" (6/6 stored only the dog); resolution occasionally decides ADD while the reason says the old fact no longer holds (1/6).
 
-- **抽取漏掉的人名、地名再问一次（2026-11-20）**：qwen3:8b 抽 "我和某人一起……" 的句子时只记后半截："My wife Anna and I have a
-  dog named Max" 7/8 次只存了狗，"My partner Sam and I are both vegetarian" 7/8 次没有 Sam，"我和老公小李住在杭州，我们有个女儿叫
-  朵朵" 7/7 次丢了杭州（另有一次写成提示词例子里的"住在上海"）。改提示词试了三版：第一版带中文例子，英文输入被抽成中文；第二版
-  带英文例子，4/8 次把例子（"Husband is Tom"、"Lives in Nelson"）当成用户的事实存下；第三版不带例子，妻子修好了，却让"姐姐是
-  医生"开始丢（0/8 → 6/8）。所以改由代码检查：`extract.mentioned()` 找出用户原话里的人名和地名（不在句首的大写词；jieba 标为
-  `ns` 的地名；"叫X"），第一次的答案没有一条提到的，就带 `LEFT_OUT` 和追加的 `extract_left_out.j2` 再问一次，只要提到这些名字的
-  新事实，并到第一次的答案里（第一次的不丢）。最多多一次调用；漏认一个名字等于不变，认错一个只多一次调用。可关：
-  `pipeline.left_out_prompt = None`（eval 变体 `no_recheck`）。新评测集 `eval/dataset-people.json`（3 个人、17 个事实、6 个检查、
-  9 个问题；编造检查：提示词例子里的地名不能成为记忆），两次、同一份代码开关对比：重检开 17/17、1/6、7/9（两次相同），关
-  16/17、2/6 和 1/6、6/9；main 上的基线两次都是 16/17、2/6、6/9（漏杭州、编出上海）。原评测集两次 12/19 和 16/19：低的那次两段
-  被 Ollama 错误打断；两次都漏了上海，查下来是消解的另一个问题（下一条记录），这几句话都没触发重检。剩下没修的：姐姐从伦敦搬到
-  巴黎，伦敦仍是当前（别人的事实变了，消解没认出来）。推送后的自动安全审查：`mentioned` 判断句首时每个大写词都复制一遍前文，
-  对长输入（最多 200 × 20 000 字）是平方级——改为向前跳过空白（先写失败的测试：1M 字 4 秒）；`LEFT_OUT` 最多 20 个名字。
+- **Ask once more for people's and places' names that extraction missed (2026-11-20)**: when qwen3:8b extracts a sentence like "I and someone together ……" it keeps only the second half: "My wife Anna and I have a
+  dog named Max" stored only the dog 7/8 times, "My partner Sam and I are both vegetarian" had no Sam 7/8 times, "我和老公小李住在杭州，我们有个女儿叫
+  朵朵" (I and my husband 小李 live in Hangzhou, and we have a daughter called 朵朵) lost Hangzhou 7/7 times (once it was also written as "住在上海" (lives in Shanghai), the example in the prompt). Three versions of the prompt were tried: the first with a Chinese example, where English input was extracted into Chinese; the second
+  with an English example, where 4/8 times the example ("Husband is Tom", "Lives in Nelson") was stored as the user's fact; the third with no example, which fixed the wife but made "姐姐是
+  医生" (the sister is a doctor) start to get lost (0/8 → 6/8). So the code checks instead: `extract.mentioned()` finds the personal and place names in the user's original words (capitalised words not at the start of a sentence; place names tagged by jieba as
+  `ns`; "叫X" (called X)), and if the first answer has no fact that mentions one of them, it asks again with `LEFT_OUT` and the added `extract_left_out.j2`, wanting only
+  new facts that mention those names, and merges them into the first answer (the first answer's facts are not lost). At most one extra call; missing a name is the same as no change, and a wrongly recognised name costs only one extra call. It can be turned off:
+  `pipeline.left_out_prompt = None` (eval variant `no_recheck`). A new eval set `eval/dataset-people.json` (3 people, 17 facts, 6 checks,
+  9 questions; an invention check: a place name from the prompt's example must not become a memory), compared twice with a switch on the same code: re-check on 17/17, 1/6, 7/9 (the same both times), off
+  16/17, 2/6 and 1/6, 6/9; the baseline on main is 16/17, 2/6, 6/9 both times (Hangzhou missed, Shanghai invented). The original eval set got 12/19 and 16/19 in two runs: in the lower run two conversations
+  were interrupted by Ollama errors; both runs missed Shanghai, which on investigation is a different problem in resolution (the next record), and these sentences did not trigger the re-check. What is left unfixed: a sister moves from London to
+  Paris and London is still current (someone else's fact changed, and resolution did not recognise it). Automatic security review after the push: when `mentioned` judges the start of a sentence, every capitalised word copies the preceding text,
+  which is quadratic for long input (up to 200 × 20,000 characters): changed to skip backwards over whitespace (failing test first: 1M characters, 4 seconds); `LEFT_OUT` has at most 20 names.
 
-- **同一批里已被替换的记忆不再当候选（2026-11-20）**：抽取改动的 eval 里 xiaowang 第 3 段（"搬到上海了…现在做数据分析师"）
-  两次都丢了上海，和抽取无关。真 qwen3:8b 3/3 次：`住在上海` UPDATE `住在北京` 之后，同一批的 `现在做数据分析师` 的候选里
-  同时有 `住在北京`（已存，本批正在替换）和 `住在上海`（本批的），模型把两者当成冲突，DELETE 了 `住在上海`——上海丢了，北京
-  留着。改：本批已经替换的已存记忆不再给后面的事实看（它的替换者在候选里代表它）；原来"目标是已被替换的记忆就改指替换者"的
-  转向随之用不到，删掉（删后测试全过）。修后同样两句 2/2 次正确（第 3 次 Ollama 出错）。`litemem eval -v resolve` 两次：
-  18/19、0/7、10/11（今天最好的一次），13/19、0/7、7/11（两段被 Ollama 错误打断，其余漏的只有一直存在的"会计"和"何时上班"）；
-  两次都没有再丢上海（`eval/results/2026-11-20-batch-candidates-{1,2}.json`）。
+- **A memory already replaced in the same batch is no longer a candidate (2026-11-20)**: in the eval for the extraction change, xiaowang's third conversation ("搬到上海了…现在做数据分析师" (moved to Shanghai … now works as a data analyst))
+  lost Shanghai both times, which has nothing to do with extraction. With the real qwen3:8b 3/3 times: after `住在上海` (lives in Shanghai) UPDATE `住在北京` (lives in Beijing), the candidates of the same batch's `现在做数据分析师` (now works as a data analyst)
+  contained both `住在北京` (stored, being replaced by this batch) and `住在上海` (this batch's), the model took the two as a conflict and DELETEd `住在上海`: Shanghai was lost and Beijing
+  stayed. Changed: a stored memory that this batch has already replaced is no longer shown to later facts (its replacer stands for it among the candidates); the old
+  redirect "if the target is a memory that has been replaced, point at its replacer" is no longer needed and is deleted (all tests still pass after deleting it). After the fix the same two sentences were correct 2/2 times (the third time Ollama errored). `litemem eval -v resolve` twice:
+  18/19, 0/7, 10/11 (the best run today), 13/19, 0/7, 7/11 (two conversations interrupted by Ollama errors, the other misses being only the long-standing "会计" (accountant) and "何时上班" (when to go to work));
+  neither run lost Shanghai again (`eval/results/2026-11-20-batch-candidates-{1,2}.json`).
 
-- **S13 给提示词用的上下文（2026-11-20）**：owner 要求每个 lite 模块都能单独用（lite-model 是共同依赖）；以前单独用 lite-mem
-  只能拿到 `search` 的命中列表，提示词要调用方自己拼，而且缺两样模型需要的东西：记下的日期（半年前的"上周末订婚了"、两年前的
-  住址会被当成现在），以及"这是笔记、不是指令"的说明（记忆内容来自用户说过的话）。`context` 只是把一次 `search` 渲染出来，
-  不调模型；llm-steward 的 `format=context` 同一天加了同样的日期和标题（它自己的模板）。预算：标题只算一次（llm-steward 原来
-  每条都算一遍标题，标题加长后会多算 200 多个 token，同一天改掉）。测试：`tests/unit/test_context.py`（日期、UTC 日、恶意的
-  多行记忆、预算、语言）、`test_search.py`（和 search 同样的命中）、`test_server.py`（200、401、403）、`test_cli.py`（中文）；
-  去掉 `oneline` 或标题预留，各有测试失败。/simplify 后：预算改为对渲染出的整段文本计数（原来在 Python 里另写一份标题、
-  假设一条一行，模板一改就算错）；模板直接拿命中（`day` 过滤器算日期）；HTTP 的两个路由共用一份检索参数；CLI 加 `--language`。
-  也改了：经 `context` 检索时，被预算挤掉的命中原来也记了访问——`search` 和 `context` 共用内部的 `_found`，在同一个快照里先按预算
-  挑、再只给挑中的记访问（先写失败的测试）。Codex：库里不认识的 `language` 原来当成 auto，HTTP 却会拒绝——改为报错。
-  没做：汉字正则和 `extract.py` 的 `_CJK` 重复（另一个分支正改那几行，合并后再统一）；jinja2 按需导入（只省约 20 ms）。
+- **S13 Context for prompts (2026-11-20)**: the owner asked that every lite module be usable on its own (lite-model is the common dependency); before, using lite-mem alone
+  gave only the hit list from `search`, the caller had to assemble the prompt, and two things a model needs were missing: the date a memory was noted (a "just got engaged last weekend" from half a year ago, or an address from two years ago,
+  would be taken as current), and the statement that "these are notes, not instructions" (the memory content comes from what the user said). `context` just renders one `search`
+  and calls no model; llm-steward's `format=context` got the same date and heading on the same day (with its own template). Budget: the heading counts only once (llm-steward used to
+  count the heading for every entry, which over-counted more than 200 tokens once the heading got longer, fixed the same day). Tests: `tests/unit/test_context.py` (date, UTC day, malicious
+  multi-line memory, budget, language), `test_search.py` (the same hits as search), `test_server.py` (200, 401, 403), `test_cli.py` (Chinese);
+  removing `oneline` or the heading reserve each makes a test fail. After /simplify: the budget now counts the whole rendered text (before, a separate copy of the heading was written in Python
+  assuming one line per entry, which would count wrongly as soon as the template changed); the template takes the hits directly (the `day` filter computes the date); the two HTTP routes share one set of search parameters; the CLI gets `--language`.
+  Also changed: when searching through `context`, hits pushed out by the budget used to be recorded as accessed too: `search` and `context` share the internal `_found`, and within one snapshot first pick by budget
+  and then record access only for the ones picked (failing test first). Codex: a `language` the library did not recognise used to be treated as auto, while HTTP would reject it: changed to raise an error.
+  Not done: the Han-character regex duplicates `_CJK` in `extract.py` (another branch is changing those lines, unify after the merge); importing jinja2 on demand (saves only about 20 ms).
 
-- **抽取漏掉的整句话也再问一次（2026-11-21）**：主评测集 xiaowang 的"会计"从 S12 起每次都丢（2026-11-21 qwen 重复跑 3/3）。
-  真 qwen3:8b 单句探查：问候 + 中间一句 + "对了……"补一句的结构（"你好，我叫小王，住在北京，在一家银行做会计。对了，我对花生
-  过敏。"）8/8 次丢掉中间的职业；去掉问候或去掉"对了"那句都 4/4 记住；银行换成医院照样丢（不是敏感词）。原来的重检只看人名、
-  地名，这句话里的名字都记住了，所以不触发；带整条消息再问一次也照样丢（8/8）。改：`extract.statements()` 把用户原话按分句切开
-  （中文逗号句号、英文的 ", " "." 和 and/but），用 jieba 取每个分句的关键词（≥2 个汉字或 ≥3 个字母，去掉问候、"对了"这类
-  停用词，问句不算），一个分句的关键词（名字另算）没有一个出现在第一次的答案里，就当成漏掉的陈述放进 `LEFT_OUT`；第二次只发
-  含漏掉项的那几句话（整条消息会重现同样的遗漏），只收提到这些关键词的新事实。含密钥的分句不再问（`sensitive.find`，不让模型
-  把它写下来）。`LEFT_OUT` 仍最多 20 项；找漏项对输入长度是线性的（12 000 句的测试 < 2 秒，平方级的写法 8 秒）。
-  结果（最终代码）：探查 5 句 × 8 次，会计那句 0/8 → 8/8，另外 4 句调用次数不变（没有多出的再问）。`eval/dataset-people.json`
-  加了两个这种结构的人（laozhou 中文、maya 英文；main 上没有丢，留作回归）。评测（同一台机器、一次只跑一个）：主集两次 16/19、
-  0/7、9/11 和 17/19、0/7、9/11，基线 3 次 16–18/19、0–1/7、8–10/11；会计在没出错的那次记住了（基线 0/3），另一次那段被
-  `resolve` 超时打断（基线 3 次里 2 次也有一个 Ollama 错误）。人物集 `resolve` 两次 22/23、1/6、10/13 和 23/23、1/6、11/13，
-  基线两次都是 23/23、1/6、11/13（少的那次是 chen 的杭州，`no_recheck` 同样丢，是抽取本身的波动）；`no_recheck` 两次
-  21/23（1/6、3/6），重检仍有用。每次 add 的中位时间不变（约 12–15 秒）（`eval/results/2026-11-21-clauses-*.json`）。
-  Codex：含密钥的分句会被再问一次——改掉（先写失败的测试）。没改、记下：一个关键词出现在答案里就算覆盖，可能放过半句没记的
-  （只会退回原来的行为；收紧会改变触发率，要另做评测）；代词指代的事实（"她在银行上班"）关键词不含人名，覆盖判断按字面；停用词
-  表是手写的。评测时发现的另一个问题：`places()`（jieba 词性）处理 100 万汉字约 26 秒，已有的 2 秒测试只用了拉丁字母——同日另一个
-  提交改掉：慢在猜未登录词的 HMM（约 35 微秒一个字），关掉后 21 万字 7.7 秒 → 0.2 秒；评测集、测试里的 140 段中文和一批少见
-  地名，开关 HMM 认出的地名完全相同（HMM 没给任何未登录词标过 `ns`），先写失败的测试。
-  推送后的自动安全审查：分句正则里 " and " 前的 `\s+` 在一长串空格上从每个空格重试一遍，是平方级（2 万个空格 3 秒、4 万个 12 秒）；
-  改为只从非空白字符后开始匹配（先写失败的测试：4 万个空格 12 秒 → 40 万个 16 毫秒）。
+- **Also ask again for whole sentences that extraction missed (2026-11-21)**: in the main eval set, xiaowang's "会计" (accountant) has been lost every time since S12 (2026-11-21 qwen repeated runs 3/3).
+  A single-sentence probe with the real qwen3:8b: a structure of greeting + a middle sentence + an "对了……" (by the way) afterthought ("你好，我叫小王，住在北京，在一家银行做会计。对了，我对花生
+  过敏。" (Hello, my name is 小王, I live in Beijing, I work as an accountant at a bank. By the way, I'm allergic to peanuts.)) lost the middle occupation 8/8 times; removing the greeting or removing the "对了" sentence made it remembered 4/4;
+  changing the bank to a hospital still lost it (it is not a sensitive word). The earlier re-check looked only at personal and place names, and all the names in this sentence were remembered, so it did not trigger; asking again with the whole message lost it just the same (8/8). Changed: `extract.statements()` splits the user's original words
+  into clauses (Chinese commas and full stops, English ", " "." and and/but), and uses jieba to take each clause's keywords (≥2 Han characters or ≥3 letters, with stop words such as greetings and "对了" removed, and questions not counted);
+  if none of a clause's keywords (names counted separately) appears in the first answer, it is treated as a missed statement and put into `LEFT_OUT`; the second call sends only
+  the sentences containing the missed items (the whole message would reproduce the same omission), and takes only new facts that mention those keywords. Clauses that contain a secret are not asked again (`sensitive.find`, so the model
+  does not write it down). `LEFT_OUT` still has at most 20 items; finding missed items is linear in the input length (a 12,000-sentence test takes < 2 seconds, a quadratic way of writing it 8 seconds).
+  Results (final code): probe of 5 sentences × 8 runs, the accountant sentence 0/8 → 8/8, and the other 4 sentences' call counts are unchanged (no extra re-asks). `eval/dataset-people.json`
+  gained two people with this structure (laozhou in Chinese, maya in English; they were not lost on main and are kept as regression). Eval (same machine, one run at a time): main set twice 16/19,
+  0/7, 9/11 and 17/19, 0/7, 9/11, baseline 3 runs 16–18/19, 0–1/7, 8–10/11; the accountant was remembered in the run that had no error (baseline 0/3), and in the other run that conversation was interrupted by a
+  `resolve` timeout (in the baseline, 2 of 3 runs also had one Ollama error). People set `resolve` twice 22/23, 1/6, 10/13 and 23/23, 1/6, 11/13,
+  baseline both times 23/23, 1/6, 11/13 (the shortfall in the lower run was chen's Hangzhou, which `no_recheck` loses as well, so it is fluctuation in extraction itself); `no_recheck` twice
+  21/23 (1/6, 3/6), so the re-check is still useful. The median time per add is unchanged (about 12–15 seconds) (`eval/results/2026-11-21-clauses-*.json`).
+  Codex: a clause containing a secret would be asked again: fixed (failing test first). Not changed, noted: a keyword appearing in the answer counts as covered, which may let through half a sentence that was not noted
+  (it only falls back to the old behaviour; tightening would change the trigger rate and needs a separate eval); for a fact with pronoun reference ("她在银行上班" (she works at a bank)) the keywords contain no name, and the coverage check is literal; the stop word
+  list is hand-written. Another problem found during the eval: `places()` (jieba part of speech) takes about 26 seconds for 1 million Han characters, and the existing 2-second test used only Latin letters: fixed by another
+  commit the same day: the slow part is the HMM that guesses unregistered words (about 35 microseconds per character), and with it off 210,000 characters go from 7.7 seconds to 0.2 seconds; over the eval sets, 140 Chinese paragraphs in the tests and a batch of uncommon
+  place names, the place names recognised with the HMM on and off are exactly the same (the HMM never tagged any unregistered word `ns`), failing test first.
+  Automatic security review after the push: in the clause regex the `\s+` before " and " retries from every space on a long run of spaces, which is quadratic (20,000 spaces 3 seconds, 40,000 12 seconds);
+  changed to start matching only after a non-whitespace character (failing test first: 40,000 spaces 12 seconds → 400,000 spaces 16 milliseconds).
 
-- **S14 embedding 迁到 lite-model（2026-11-22）**：架构评审（2026-11-21）定的：HTTP embedder 收进 lite-model，这一轮只迁 lite-mem。
-  - `EmbeddingConfig` 现在是 lite-model 的 `ModelsConfig`（`LITEMEM_EMBEDDING__BACKEND` / `__MODEL` / `__BACKENDS__…` /
-    `__MAX_RETRIES` / `__TIMEOUT_S`），lite-mem 自己只加 `dim`。默认 `ollama` / `bge-m3:567m`：backend 名就是索引记录的
-    `provider`，所以已有的 namespace 身份不变。llm-steward 设的 `LITEMEM_EMBEDDING__DIM` 照旧可用。
-  - 旧键 `PROVIDER`、`BASE_URL`、`API_KEY` 启动时报错，并写出新键在哪。不报错的话 pydantic 会悄悄忽略它们，namespace 就会用默认模型去
-    embed。
-  - Ollama 改走 OpenAI 兼容的 `/v1/embeddings`；`-m ollama` 测试确认它和以前的 `/api/embed` 向量逐元素相等（1024 维，三段中英文），
-    把实现故意改成倒序后测试变红。
-  - 重试、分批、条数 / 顺序 / 维度检查、错误不带上游文本，都由 lite-model 负责并在那边测试；lite-mem 原来测这些的单元测试随旧实现删除，
-    `tests/unit/test_embedding.py` 改为固定 lite-mem 依赖的部分（身份、请求体、dim、错误类型、旧键）。行为变化一处：dim 从第一次
-    回复里读到，不再为它单独发一次探测请求（先写失败的测试）。
-  - Anthropic：lite-model 0.5.0 起结构化输出用 `output_config.format`，不再强制 tool（新的 Claude 模型会拒绝强制 tool）。
-    `tests/data/llm_requests.json` 只重写了 anthropic 的四条：每条除了 `tools` / `tool_choice` 换成 `output_config`，其余字段
-    逐字段比对过不变；openai 的八条没动。
-  - eval：`_embedding_identity` 用解析后的 target（`provider` 仍是 backend 名，`base_url` 现在是实际端点），旧的 eval 缓存身份
-    会对不上，重跑一次即可；mem0 对照从 target 取 Ollama 地址。
-  - 检查：ruff、format、mypy 通过；pytest 453 passed；`-m ollama` 6 passed。
-  - `/simplify` 采纳：建 lite-model 客户端和错误转换与 LLM 共用 `llm.build_model`（多了 `roles` 参数）；embedder 持有 `Target`，
-    不再另存 provider / model；`embed_target` 改用 `resolve()`，和 `build()` 做同样的校验；eval target 在构造时解析一次；mem0
-    对照的模型名也取自 target，配置了 `dim` 就不再探测。不采纳：把"键已迁移"的提示做成 lite-model 的通用机制（lite-rag 的
-    embedding 迁移如果再写一份，再挪过去）；LLM 和 embedder 共用一个 SDK 客户端（超时和重试不同，没法共用）。
-  - Codex：没有 finding。
+- **S14 Embedding moves to lite-model (2026-11-22)**: decided by the architecture review (2026-11-21): the HTTP embedder moves into lite-model, and this round migrates only lite-mem.
+  - `EmbeddingConfig` is now lite-model's `ModelsConfig` (`LITEMEM_EMBEDDING__BACKEND` / `__MODEL` / `__BACKENDS__…` /
+    `__MAX_RETRIES` / `__TIMEOUT_S`), and lite-mem adds only `dim`. The default is `ollama` / `bge-m3:567m`: the backend name is the `provider` recorded
+    by the index, so the identity of existing namespaces is unchanged. The `LITEMEM_EMBEDDING__DIM` set by llm-steward still works as before.
+  - The old keys `PROVIDER`, `BASE_URL` and `API_KEY` raise an error at startup and say where the new keys are. Without the error, pydantic would silently ignore them, and the namespace would embed
+    with the default model.
+  - Ollama now goes through the OpenAI-compatible `/v1/embeddings`; the `-m ollama` test confirms its vectors equal the earlier `/api/embed` vectors element by element (1024 dimensions, three Chinese and English passages),
+    and the test goes red when the implementation is deliberately changed to reverse the order.
+  - Retries, batching, count / order / dimension checks, and errors not carrying upstream text are all handled by lite-model and tested there; the lite-mem unit tests that used to test these were deleted with the old implementation,
+    and `tests/unit/test_embedding.py` is changed to pin what lite-mem depends on (identity, request body, dim, error type, old keys). One behaviour change: dim is read from the first
+    reply, and no separate probe request is sent for it any more (failing test first).
+  - Anthropic: since lite-model 0.5.0 structured output uses `output_config.format` and no longer forces a tool (new Claude models reject a forced tool).
+    Only the four anthropic entries in `tests/data/llm_requests.json` were rewritten: apart from `tools` / `tool_choice` being replaced by `output_config`, every other field
+    was compared field by field and is unchanged; the eight openai entries were not touched.
+  - Eval: `_embedding_identity` uses the resolved target (`provider` is still the backend name, `base_url` is now the actual endpoint), and the identity in an old eval cache
+    will not match, so just re-run once; the mem0 comparison takes the Ollama address from the target.
+  - Checks: ruff, format and mypy pass; pytest 453 passed; `-m ollama` 6 passed.
+  - `/simplify` accepted: building the lite-model client and the error conversion share `llm.build_model` with the LLM (with an extra `roles` parameter); the embedder holds the `Target`
+    and no longer stores provider / model separately; `embed_target` uses `resolve()`, doing the same validation as `build()`; the eval target is resolved once at construction; the mem0
+    comparison's model name is also taken from the target, and when `dim` is configured it is no longer probed. Rejected: making the "key has been migrated" hint a general lite-model mechanism (if lite-rag's
+    embedding migration writes another copy, move it over then); the LLM and the embedder sharing one SDK client (timeouts and retries differ, so they cannot be shared).
+  - Codex: no findings.
 
-## 13. 待确认
+## 13. Open questions
 
-- **llm-steward 接入时冲突消解归谁**（S9 前定）：
-  - 引擎消解，llm-steward 映射事件：更简单，能力完整；
-  - llm-steward 消解，引擎只抽取：治理层能看到每一次判断，但多一次往返。
-- **合并阈值、遗忘阈值的默认值**：合并 0.92（S7，证据薄，见 §12）；遗忘默认关闭，等有长期使用的数据再定。
-- **和 lite-rag 共用代码**（embedding、BM25、LLM 层）还是各自独立：v1 各自独立（两个仓库都在学习期，接口还在变）；稳定后再考虑抽出一个共享小包。
-  LLM 层已经共用：S12 起由 lite-model 提供（2026-11-18）；embedding 和 BM25 仍各自独立。
-- **License**：仓库建立时用 Apache-2.0（与 llm-steward 一致），owner 可以改。
-- **S9 开始前要定的（S8 审查汇总）**：
-  - 事件契约：`MemoryEvent` 加时间（EXPIRE 按到期时间失效需要它）和 scope（整个 namespace 的 `maintain` 返回的事件要能对回用户）；NOOP 是否放进写入结果（S4、S5 都推到了这里）；出处是否拆成"抽取者 / 决定者"。和 llm-steward 的 `MemoryEvent`（现在只有 ADD / UPDATE / DELETE、没有 `replaced`）一起改，只改一次。
-  - 离线变化怎么到达 llm-steward：它自己按用户调 `maintain`（推荐），还是加按游标拉事件的接口（`memory_events` 的 id 在并发写时提交顺序不保证，游标要留安全余量）。
-  - llm-steward 的 `MemoryProvider.add` 没有幂等键，`ExtractionService` 只镜像 ADD。
-  - 延迟和租约：一次 `add(infer=true)` 是一次抽取加每条事实一次消解，本地 qwen3 3–10 秒（不思考）到 90 秒（思考）；llm-steward 的任务租约 60 秒。要么一次调用消解整批（S4 起推迟的另一种 Resolver，要 eval 验证），要么给 lite-mem 的任务单独的租约。
-  - ~~BM25 按 scope 统计~~：S8b 已做。
-- **生命周期的两个缺口**（2026-11-27 记，都还没有需求，不排阶段）：
-  - **按保留策略物理清除**：保留期是合规规则，归治理层（§1 非目标）。合适的分工是 lite-mem 提供一个"物理删除关闭超过 N 天的行及其向量、倒排、历史"的操作（和 `erase` 一样是硬删除，要明确确认），什么时候清、清多少由 llm-steward 这类上层决定。要先定：清掉历史之后，`as_of` 看到更早时刻的结果会变，这一点要写明。
-  - **Validate（核对旧记忆）**：要做就是 `maintain` 里加一步"拿来源核对旧记忆"（KB `global/llm-app-architecture.md` §13.4 的 dreaming）。难点是 lite-mem 不存对话原文，`source` 只是一个可选的 episode id，所以核对要调用方把原文交回来，接口需要重新设计。按规则 11，先要有能量出 stale 的 eval（现在 eval 有 stale 指标，但只覆盖写入时的取代），再决定做不做。
+- **Who owns conflict resolution when llm-steward connects** (decide before S9):
+  - The engine resolves and llm-steward maps the events: simpler, with complete capability;
+  - llm-steward resolves and the engine only extracts: the governance layer can see every judgement, but there is one more round trip.
+- **Default values for the merge and forgetting thresholds**: merge 0.92 (S7, thin evidence, see §12); forgetting is off by default, to be set when there is long-term usage data.
+- **Share code with lite-rag** (embedding, BM25, LLM layer) or stay independent: in v1 each stays independent (both repos are in their learning period and the interfaces are still changing); consider extracting a small shared package once they are stable.
+  The LLM layer is already shared: provided by lite-model since S12 (2026-11-18); embedding and BM25 are still independent.
+- **License**: Apache-2.0 when the repo was created (consistent with llm-steward); the owner can change it.
+- **To decide before S9 starts (summary of the S8 review)**:
+  - Event contract: `MemoryEvent` gets a time (needed for EXPIRE to invalidate at the expiry time) and a scope (the events returned by a whole-namespace `maintain` must map back to users); whether NOOP goes into the write result (S4 and S5 both pushed it to here); whether provenance is split into "extractor / decider". Change it together with llm-steward's `MemoryEvent` (which today has only ADD / UPDATE / DELETE and no `replaced`), so it changes only once.
+  - How offline changes reach llm-steward: it calls `maintain` itself per user (recommended), or an interface that pulls events by cursor is added (the commit order of `memory_events` ids is not guaranteed under concurrent writes, so the cursor must keep a safety margin).
+  - llm-steward's `MemoryProvider.add` has no idempotency key, and `ExtractionService` mirrors only ADD.
+  - Latency and lease: one `add(infer=true)` is one extraction plus one resolution per fact, 3–10 seconds on a local qwen3 (thinking off) up to 90 seconds (thinking on); llm-steward's task lease is 60 seconds. Either resolve the whole batch in one call (the other Resolver deferred since S4, which needs eval validation), or give lite-mem's tasks a separate lease.
+  - ~~BM25 statistics per scope~~: done in S8b.
+- **Two gaps in the lifecycle** (noted 2026-11-27, neither has a demand yet, no stage scheduled):
+  - **Physical purge by retention policy**: the retention period is a compliance rule and belongs to the governance layer (§1 Non-goals). A suitable split is for lite-mem to provide an operation "physically delete rows closed for more than N days, with their vectors, postings and history" (a hard delete like `erase`, needing explicit confirmation), while when to purge and how much is decided by an upper layer such as llm-steward. To be decided first: after the history is purged, what `as_of` sees for an earlier moment will change, and this has to be written down.
+  - **Validate (check old memories)**: doing it means adding a step to `maintain` that "checks old memories against their sources" (the dreaming in KB `global/llm-app-architecture.md` §13.4). The difficulty is that lite-mem does not store the original conversation text and `source` is only an optional episode id, so checking requires the caller to hand the original text back, and the interface needs to be redesigned. Per rule 11, first there must be an eval that can measure stale (the eval now has a stale metric, but it covers only supersede at write time), and only then decide whether to do it.
