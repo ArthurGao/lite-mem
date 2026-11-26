@@ -54,6 +54,19 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 
 所以 lite-mem 里的 `procedural` 指的是**偏好的做法**，不是流程本身。要在一个 agent 里同时用上这四类，还缺 lite-agent 的 `Memory` 协议接 lite-mem 的 adapter（lite-agent 设计 §6，目前只有测试用的 `NotesMemory`）。
 
+### 记忆的生命周期操作（2026-11-27）
+
+按常见的六种操作对照 lite-mem 现在能做什么（细节见 §3、§4、§6）：
+
+| 操作 | 支持 | lite-mem 里是什么 |
+| --- | --- | --- |
+| Create（存新信息） | 是 | `add(infer=true)`（抽取 + 冲突消解）、`add(infer=false)`（原样）、`remember`（调用方给一条事实） |
+| Retrieve（取相关信息） | 是 | `search`（向量 + BM25 + RRF，加权，可选 `follow_up`）、`context()`、`get`、`list_memories`、`history`、`as_of` |
+| Update（改过时信息） | 是，两种 | 措辞：`update` = CORRECT，id 不变；事实变了：SUPERSEDE，新 id，旧行关闭但保留（冲突消解和 `profile` 新值都走这个） |
+| Validate（核对是否仍然正确） | 基本没有 | 只有写入时的校验（模型提议、代码决定，抽取后补查遗漏）。写进去之后没有任何机制核对旧记忆是否仍然正确；`maintain` 的合并不是核实。人工确认属于 llm-steward 的治理层。见 §13 |
+| Expire（移除临时信息） | 是 | `expires_at`（过期立刻检索不到，`maintain` 记 EXPIRE）；遗忘（衰减到阈值以下且久未命中，默认关闭） |
+| Delete（按保留策略删除） | 部分 | `delete` 是软删除（关闭、记 DELETE，原文和历史都在）；唯一的硬删除是 `erase(user_id)`。没有按保留策略的物理清除，关闭的行一直留着。见 §13 |
+
 ## 2. 数据流
 
 ```
@@ -564,3 +577,6 @@ lite-mem/
   - llm-steward 的 `MemoryProvider.add` 没有幂等键，`ExtractionService` 只镜像 ADD。
   - 延迟和租约：一次 `add(infer=true)` 是一次抽取加每条事实一次消解，本地 qwen3 3–10 秒（不思考）到 90 秒（思考）；llm-steward 的任务租约 60 秒。要么一次调用消解整批（S4 起推迟的另一种 Resolver，要 eval 验证），要么给 lite-mem 的任务单独的租约。
   - ~~BM25 按 scope 统计~~：S8b 已做。
+- **生命周期的两个缺口**（2026-11-27 记，都还没有需求，不排阶段）：
+  - **按保留策略物理清除**：保留期是合规规则，归治理层（§1 非目标）。合适的分工是 lite-mem 提供一个"物理删除关闭超过 N 天的行及其向量、倒排、历史"的操作（和 `erase` 一样是硬删除，要明确确认），什么时候清、清多少由 llm-steward 这类上层决定。要先定：清掉历史之后，`as_of` 看到更早时刻的结果会变，这一点要写明。
+  - **Validate（核对旧记忆）**：要做就是 `maintain` 里加一步"拿来源核对旧记忆"（KB `global/llm-app-architecture.md` §13.4 的 dreaming）。难点是 lite-mem 不存对话原文，`source` 只是一个可选的 episode id，所以核对要调用方把原文交回来，接口需要重新设计。按规则 11，先要有能量出 stale 的 eval（现在 eval 有 stale 指标，但只覆盖写入时的取代），再决定做不做。
