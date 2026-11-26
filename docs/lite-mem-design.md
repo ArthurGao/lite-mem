@@ -41,6 +41,19 @@ lite-mem 把这两步变成引擎内部的完整流水线，补上存储、历�
 - **v1 不做知识图谱**：实体和关系图放在 S10 之后再考虑（见 §12）。
 - **不做分布式**：一个 PG 实例就够。目标规模是每个 namespace 百万级记忆、每个用户千级记忆。
 
+### 四类记忆分别放在哪（2026-11-27）
+
+常见的分法是 Working / Episodic / Semantic / Procedural 四类。lite-mem 只负责其中"从对话里来的长期事实"，其余的由 workspace 里的其他模块负责：
+
+| 类型 | 存什么 | 例子 | 放在哪 | 理由 |
+| --- | --- | --- | --- | --- |
+| Working | 当前任务的状态 | 进行到哪一步、还有哪些待办动作 | **lite-agent**（只追加的事件日志 + 投影、session store、暂停 / 恢复）；**lite-context**（`fit()`、调用方保存的 `ContextState`、`Transcript`） | 随一次运行产生、随它结束；需要精确的顺序和重放，不需要相似度检索。lite-mem 的 `session_id` 只是 scope，用来限定长期记忆的可见范围，不保存任务状态 |
+| Episodic | 发生过的事 | 上周定下的某个架构决定 | **lite-mem** `type=episodic` | 默认按 30 天半衰期衰减（§5）；渲染时写成"那天发生的"（§5 上下文）；可以由维护任务归纳成 semantic（§6，默认关闭） |
+| Semantic | 稳定的事实 | 关于用户的："住在 Auckland"；组织的："公司架构" | 关于人的、从对话里抽出的原子事实：**lite-mem** `semantic` / `profile`（`profile` 每个 key 只有一个当前值）；成篇的组织知识：**lite-rag** / llm-steward 知识库 | 文档知识要切块、出处、引用和治理，不是一句话的事实（见上面的"不做文档知识库"） |
+| Procedural | 技能和规则 | 安全审查流程 | 一句话的偏好（"用户喜欢先写测试"）：**lite-mem** `type=procedural`；多步骤的流程：**lite-agent skills**（`SkillDir` 读 `<name>/SKILL.md`，system 里只放索引，模型按需 `load_skill`） | 流程是宿主维护、带版本的文件，不应该由模型从对话里抽取：抽错一步、或者对话里有人注入一条"规则"，都会被当成以后要照做的指令 |
+
+所以 lite-mem 里的 `procedural` 指的是**偏好的做法**，不是流程本身。要在一个 agent 里同时用上这四类，还缺 lite-agent 的 `Memory` 协议接 lite-mem 的 adapter（lite-agent 设计 §6，目前只有测试用的 `NotesMemory`）。
+
 ## 2. 数据流
 
 ```
